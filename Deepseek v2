@@ -1,5 +1,5 @@
--- language: Lua, file: dqr_vanta_loader.lua, target: Roblox Dungeon Quest Reborn
--- loader shell modeled on sportsclub pattern — keysystem stripped, straight to hub
+-- language: Lua, file: dqr_vanta.lua, target: Roblox Dungeon Quest Reborn, mobile executor
+-- single-file hub · no keysystem · fly-farm · hardened skill FSM · mobile-safe UI
 
 repeat task.wait() until game:IsLoaded()
 
@@ -11,26 +11,28 @@ end
 
 local cloneref = cloneref or function(o) return o end
 
-local Players          = cloneref(game:GetService("Players"))
-local RunService       = cloneref(game:GetService("RunService"))
-local UserInputService = cloneref(game:GetService("UserInputService"))
-local TweenService     = cloneref(game:GetService("TweenService"))
-local CoreGui          = cloneref(game:GetService("CoreGui"))
-local VirtualUser      = cloneref(game:GetService("VirtualUser"))
-local VirtualInputManager = cloneref(game:GetService("VirtualInputManager"))
-local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+local Players              = cloneref(game:GetService("Players"))
+local RunService           = cloneref(game:GetService("RunService"))
+local UserInputService     = cloneref(game:GetService("UserInputService"))
+local TweenService         = cloneref(game:GetService("TweenService"))
+local CoreGui              = cloneref(game:GetService("CoreGui"))
+local VirtualUser          = cloneref(game:GetService("VirtualUser"))
+local VirtualInputManager  = cloneref(game:GetService("VirtualInputManager"))
+local ReplicatedStorage    = cloneref(game:GetService("ReplicatedStorage"))
 
 local LP     = cloneref(Players.LocalPlayer)
 local Camera = workspace.CurrentCamera
 
-local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled and not UserInputService.MouseEnabled
+local IsMobile = UserInputService.TouchEnabled
+    and not UserInputService.KeyboardEnabled
+    and not UserInputService.MouseEnabled
 
 if identifyexecutor and identifyexecutor() == "Wave" then
     getgenv().gethui = function() return CoreGui end
 end
 
 -- ============================================================
--- THEME
+-- PRIMITIVES
 -- ============================================================
 local FromRGB  = Color3.fromRGB
 local UDim2New = UDim2.new
@@ -39,32 +41,33 @@ local Vec2New  = Vector2.new
 local INew     = Instance.new
 
 local Theme = {
-    Background = FromRGB(8, 9, 12),
-    Element    = FromRGB(16, 18, 21),
-    Ghost      = FromRGB(22, 25, 30),
-    Hover      = FromRGB(28, 32, 39),
-    Text       = FromRGB(235, 238, 245),
-    Muted      = FromRGB(141, 148, 163),
-    Inactive   = FromRGB(141, 148, 163),
-    Accent     = FromRGB(61, 158, 255),
-    AccentHover= FromRGB(10, 124, 255),
-    Border     = FromRGB(255, 255, 255),
-    Danger     = FromRGB(220, 70, 70),
-    Success    = FromRGB(70, 190, 120),
-    Purple     = FromRGB(160, 100, 240),
+    Background  = FromRGB(8, 9, 12),
+    Element     = FromRGB(16, 18, 21),
+    Ghost       = FromRGB(22, 25, 30),
+    Hover       = FromRGB(28, 32, 39),
+    Text        = FromRGB(235, 238, 245),
+    Muted       = FromRGB(141, 148, 163),
+    Accent      = FromRGB(61, 158, 255),
+    AccentHover = FromRGB(10, 124, 255),
+    Border      = FromRGB(255, 255, 255),
+    Danger      = FromRGB(220, 70, 70),
+    Success     = FromRGB(70, 190, 120),
+    TrackOff    = FromRGB(40, 42, 52),
+    Dot         = FromRGB(228, 230, 240),
 }
 
 local FontFace do
     local Ok, Face = pcall(function()
-        return Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Medium, Enum.FontStyle.Normal)
+        return Font.new("rbxasset://fonts/families/BuilderSans.json",
+                        Enum.FontWeight.Medium, Enum.FontStyle.Normal)
     end)
     FontFace = (Ok and Face) or Font.fromEnum(Enum.Font.GothamMedium)
 end
 
 local function Create(Class, Props)
     local Inst = INew(Class)
-    for Key, Value in Props do
-        if Key ~= "Parent" then Inst[Key] = Value end
+    for k, v in Props do
+        if k ~= "Parent" then Inst[k] = v end
     end
     if Props.Parent then Inst.Parent = Props.Parent end
     return Inst
@@ -85,20 +88,24 @@ local function Stroke(Parent, Col, Trans)
 end
 
 local function Tween(Inst, Info, Goal)
-    local tw = TweenService:Create(Inst, Info or TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), Goal)
+    local tw = TweenService:Create(
+        Inst,
+        Info or TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+        Goal
+    )
     tw:Play()
     return tw
 end
 
 -- ============================================================
--- STATE
+-- STATE + SCHEDULER
 -- ============================================================
 local State = {
-    AutoFarm=false, AutoAttack=false, AutoSkill=false, KillAura=false,
-    AutoDodge=false, AutoStart=false, AutoReplay=false, AutoBackLobby=false,
-    AutoSell=false, AutoEquip=false, AntiAFK=false, WalkSpeed=false,
-    Fly=false, InfiniteJump=false, NoClip=false, ESP=false, GodMode=false,
-    FlyFarm=false,
+    AutoFarm=false, FlyFarm=false, AutoAttack=false, AutoSkill=false,
+    KillAura=false, AutoDodge=false, AutoStart=false, AutoReplay=false,
+    AutoBackLobby=false, AutoSell=false, AutoEquip=false, AntiAFK=false,
+    WalkSpeed=false, Fly=false, InfiniteJump=false, NoClip=false,
+    ESP=false, GodMode=false,
 }
 
 local Scheduler = {tokens={}, threads={}}
@@ -128,7 +135,7 @@ function Scheduler.stop(key)
 end
 
 -- ============================================================
--- CORE
+-- CORE ACCESSORS
 -- ============================================================
 local function getHum()
     local c = LP.Character
@@ -152,7 +159,10 @@ local function findContainer()
     if cachedContainer and cachedContainer.Parent and now < containerRescanAt then
         return cachedContainer
     end
-    for _, name in ipairs({"Enemies","Mobs","Monsters","NPCs","Units","DungeonMobs","DungeonEnemies","Spawns","ActiveEnemies","WaveEnemies","Bosses","Hostiles"}) do
+    for _, name in ipairs({
+        "Enemies","Mobs","Monsters","NPCs","Units","DungeonMobs",
+        "DungeonEnemies","Spawns","ActiveEnemies","WaveEnemies","Bosses","Hostiles"
+    }) do
         local f = workspace:FindFirstChild(name)
         if f then cachedContainer = f; containerRescanAt = now + 10; return f end
     end
@@ -176,7 +186,9 @@ local function getEnemies()
         if obj:IsA("Model") and obj ~= myChar then
             local h = obj:FindFirstChildOfClass("Humanoid")
             if h and h.Health > 0 and not Players:GetPlayerFromCharacter(obj) then
-                local r = obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart or obj:FindFirstChild("Torso")
+                local r = obj:FindFirstChild("HumanoidRootPart")
+                    or obj.PrimaryPart
+                    or obj:FindFirstChild("Torso")
                 if r then out[#out+1] = {model=obj, humanoid=h, root=r} end
             end
         end
@@ -245,23 +257,32 @@ end
 -- FLY-FARM (hover above enemy, out of melee reach)
 -- ============================================================
 local FlyFarm = {bv=nil, bg=nil, alt=22, standoff=6}
-local function flyStart()
+local function flyFarmStart()
     local r = getRoot()
     if not r then return end
-    if FlyFarm.bv then FlyFarm.bv:Destroy() end
-    if FlyFarm.bg then FlyFarm.bg:Destroy() end
-    local bv = INew("BodyVelocity", r)
-    bv.MaxForce = Vector3.new(1e6, 1e6, 1e6); bv.P = 5000; bv.Velocity = Vector3.zero
-    local bg = INew("BodyGyro", r)
-    bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6); bg.P = 8000; bg.D = 500
+    if FlyFarm.bv then pcall(function() FlyFarm.bv:Destroy() end) end
+    if FlyFarm.bg then pcall(function() FlyFarm.bg:Destroy() end) end
+
+    local bv = INew("BodyVelocity")
+    bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    bv.P = 5000
+    bv.Velocity = Vector3.zero
+    bv.Parent = r
+
+    local bg = INew("BodyGyro")
+    bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    bg.P = 8000
+    bg.D = 500
     bg.CFrame = r.CFrame
+    bg.Parent = r
+
     FlyFarm.bv, FlyFarm.bg = bv, bg
 end
-local function flyStop()
+local function flyFarmStop()
     if FlyFarm.bv then pcall(function() FlyFarm.bv:Destroy() end); FlyFarm.bv = nil end
     if FlyFarm.bg then pcall(function() FlyFarm.bg:Destroy() end); FlyFarm.bg = nil end
 end
-local function flyTick()
+local function flyFarmTick()
     local r = getRoot()
     if not r or not FlyFarm.bv then return end
     local target = getNearest(300)
@@ -271,7 +292,11 @@ local function flyTick()
         local dx, dz = r.Position.X - base.X, r.Position.Z - base.Z
         local mag = math.sqrt(dx*dx + dz*dz)
         if mag < 0.1 then dx, dz, mag = 1, 0, 1 end
-        desired = Vector3.new(base.X + (dx/mag) * FlyFarm.standoff, base.Y + FlyFarm.alt, base.Z + (dz/mag) * FlyFarm.standoff)
+        desired = Vector3.new(
+            base.X + (dx/mag) * FlyFarm.standoff,
+            base.Y + FlyFarm.alt,
+            base.Z + (dz/mag) * FlyFarm.standoff
+        )
         FlyFarm.bg.CFrame = CFrame.lookAt(r.Position, Vector3.new(base.X, base.Y, base.Z))
     else
         desired = r.Position
@@ -279,7 +304,7 @@ local function flyTick()
     local delta = desired - r.Position
     local horiz = Vector3.new(delta.X, 0, delta.Z) * 3
     local vert  = math.clamp(delta.Y * 4, -80, 80)
-    local cur = r.AssemblyLinearVelocity or Vector3.zero
+    local cur   = r.AssemblyLinearVelocity or Vector3.zero
     FlyFarm.bv.Velocity = horiz + Vector3.new(0, vert - cur.Y * 0.6, 0)
 end
 
@@ -291,7 +316,7 @@ local function screenCenter()
     local vp = Camera.ViewportSize
     return Vec2New(vp.X * 0.5, vp.Y * 0.5)
 end
-local function scanRemote(tool)
+local function scanToolRemote(tool)
     for _, d in ipairs(tool:GetDescendants()) do
         if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then return d end
     end
@@ -301,16 +326,22 @@ local function click()
     local tool = getTool()
     if not tool then return end
     pcall(function() tool:Activate() end)
+
     local now = tick()
     if not Clicker.remote or now > Clicker.scanAt then
-        Clicker.remote = scanRemote(tool); Clicker.scanAt = now + 20
+        Clicker.remote = scanToolRemote(tool)
+        Clicker.scanAt = now + 20
     end
     if Clicker.remote then
         pcall(function()
-            if Clicker.remote:IsA("RemoteEvent") then Clicker.remote:FireServer()
-            elseif Clicker.remote:IsA("RemoteFunction") then Clicker.remote:InvokeServer() end
+            if Clicker.remote:IsA("RemoteEvent") then
+                Clicker.remote:FireServer()
+            elseif Clicker.remote:IsA("RemoteFunction") then
+                Clicker.remote:InvokeServer()
+            end
         end)
     end
+
     local p = screenCenter()
     pcall(function()
         VirtualInputManager:SendMouseButtonEvent(p.X, p.Y, 0, true,  game, 0)
@@ -322,7 +353,13 @@ end
 -- ============================================================
 -- SKILL FSM (single-flight)
 -- ============================================================
-local Skill = {slots={"Q","E"}, cd={Q=3.5, E=6.0}, last={Q=0, E=0}, inFlight=false, flightDur=0.55}
+local Skill = {
+    slots = {"Q","E"},
+    cd = {Q=3.5, E=6.0},
+    last = {Q=0, E=0},
+    inFlight = false,
+    flightDur = 0.55,
+}
 local function skillPress(slot)
     local k = Enum.KeyCode[slot]
     if not k then return end
@@ -333,18 +370,21 @@ local function skillPress(slot)
         VirtualInputManager:SendKeyEvent(false, k, false, game)
     end)
     task.spawn(function()
-        task.wait(Skill.flightDur); Skill.inFlight = false
+        task.wait(Skill.flightDur)
+        Skill.inFlight = false
     end)
     if ok then Skill.last[slot] = tick() end
 end
 local function skillRun(isAlive)
     while isAlive() do
-        if State.AutoSkill and getHum() and getHum().Health > 0 then
-            local now = tick()
-            if not Skill.inFlight then
+        if State.AutoSkill then
+            local h = getHum()
+            if h and h.Health > 0 and not Skill.inFlight then
+                local now = tick()
                 for _, slot in ipairs(Skill.slots) do
                     if (now - Skill.last[slot]) >= Skill.cd[slot] then
-                        skillPress(slot); break
+                        skillPress(slot)
+                        break
                     end
                 end
             end
@@ -358,24 +398,26 @@ end
 -- ============================================================
 local function attackRun(isAlive)
     while isAlive() do
-        if State.AutoAttack and getHum() and getHum().Health > 0 then
-            click()
+        if State.AutoAttack then
+            local h = getHum()
+            if h and h.Health > 0 then click() end
         end
         task.wait(0.22 + math.random() * 0.16)
     end
 end
 
 -- ============================================================
--- FARM LOOP (fly-hover mode or walk mode)
+-- FARM LOOP
 -- ============================================================
 local function farmRun(isAlive)
     while isAlive() do
-        if State.AutoFarm and getHum() and getHum().Health > 0 then
+        local h = getHum()
+        if State.AutoFarm and h and h.Health > 0 then
             if State.FlyFarm then
-                if not FlyFarm.bv then flyStart() end
-                flyTick()
+                if not FlyFarm.bv then flyFarmStart() end
+                flyFarmTick()
             else
-                if FlyFarm.bv then flyStop() end
+                if FlyFarm.bv then flyFarmStop() end
                 local r = getRoot()
                 if r then
                     local target = getNearest(300)
@@ -384,27 +426,33 @@ local function farmRun(isAlive)
                         if dist > 7.5 then
                             walkTo(target.root.Position)
                         else
-                            getHum():MoveTo(r.Position)
-                            local flat = Vector3.new(target.root.Position.X, r.Position.Y, target.root.Position.Z)
+                            h:MoveTo(r.Position)
+                            local flat = Vector3.new(
+                                target.root.Position.X,
+                                r.Position.Y,
+                                target.root.Position.Z
+                            )
                             if (flat - r.Position).Magnitude > 0.1 then
                                 r.CFrame = CFrame.new(r.Position, flat)
                             end
                         end
                     else
-                        getHum():MoveTo(r.Position)
+                        h:MoveTo(r.Position)
                     end
                     if detectStuck() then
-                        walkTo(r.Position + Vector3.new(math.random(-8,8), 0, math.random(-8,8)))
+                        walkTo(r.Position + Vector3.new(
+                            math.random(-8, 8), 0, math.random(-8, 8)
+                        ))
                         task.wait(0.4)
                     end
                 end
             end
         else
-            if FlyFarm.bv then flyStop() end
+            if FlyFarm.bv then flyFarmStop() end
         end
         task.wait(0.15)
     end
-    flyStop()
+    flyFarmStop()
 end
 
 -- ============================================================
@@ -412,9 +460,9 @@ end
 -- ============================================================
 local function auraRun(isAlive)
     while isAlive() do
-        if State.KillAura and getHum() and getHum().Health > 0 then
-            local r = getRoot()
-            if r then
+        if State.KillAura then
+            local r, h = getRoot(), getHum()
+            if r and h and h.Health > 0 then
                 for _, e in ipairs(getEnemies()) do
                     if (e.root.Position - r.Position).Magnitude < 22 then
                         click()
@@ -432,11 +480,11 @@ end
 local function dodgeRun(isAlive)
     local last = 0
     while isAlive() do
-        if State.AutoDodge and getHum() and getHum().Health > 0 then
+        if State.AutoDodge then
             local now = tick()
             if now - last > 0.35 then
                 local r, h = getRoot(), getHum()
-                if r and h then
+                if r and h and h.Health > 0 then
                     if h.Health < h.MaxHealth * 0.42 then
                         local away = (r.Position - Camera.CFrame.Position).Unit * 20
                         walkTo(r.Position + Vector3.new(away.X, 0, away.Z))
@@ -476,7 +524,7 @@ local function afkRun(isAlive)
 end
 
 -- ============================================================
--- INVENTORY
+-- DUNGEON + INVENTORY UI AUTOMATION
 -- ============================================================
 local function findButton(patterns)
     for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
@@ -543,14 +591,18 @@ end
 -- ============================================================
 -- MOVEMENT
 -- ============================================================
-local flyHover = nil
+local flyHoverCleanup = nil
 local function enableFlyHover()
     local r = getRoot()
     if not r then return end
-    local bv = INew("BodyVelocity", r)
-    bv.MaxForce = Vector3.new(1e5,1e5,1e5); bv.Velocity = Vector3.zero
-    local bg = INew("BodyGyro", r)
-    bg.MaxTorque = Vector3.new(1e5,1e5,1e5); bg.P = 1e4
+    local bv = INew("BodyVelocity")
+    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+    bv.Velocity = Vector3.zero
+    bv.Parent = r
+    local bg = INew("BodyGyro")
+    bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+    bg.P = 1e4
+    bg.Parent = r
     local conn = RunService.RenderStepped:Connect(function()
         if not State.Fly then return end
         local cam = Camera.CFrame
@@ -559,22 +611,22 @@ local function enableFlyHover()
         if gp then
             for _, i in ipairs(gp) do
                 if i.KeyCode == Enum.KeyCode.Thumbstick1 then
-                    move = move + cam.LookVector * i.Position.Z * 60
+                    move = move + cam.LookVector  * i.Position.Z * 60
                     move = move + cam.RightVector * i.Position.X * 60
                 end
             end
         end
         bv.Velocity = move
-        bg.CFrame = cam
+        bg.CFrame   = cam
     end)
-    flyHover = function()
+    flyHoverCleanup = function()
         pcall(function() conn:Disconnect() end)
         pcall(function() bv:Destroy() end)
         pcall(function() bg:Destroy() end)
     end
 end
 local function disableFlyHover()
-    if flyHover then flyHover(); flyHover = nil end
+    if flyHoverCleanup then flyHoverCleanup(); flyHoverCleanup = nil end
 end
 
 -- ============================================================
@@ -587,21 +639,24 @@ local function espRun(isAlive)
             for _, e in ipairs(getEnemies()) do
                 local c = espCache[e.model]
                 if not c or not c.bb or not c.bb.Parent then
-                    local bb = INew("BillboardGui", e.model)
+                    local bb = INew("BillboardGui")
                     bb.Size = UDim2New(0, 110, 0, 32)
                     bb.StudsOffset = Vector3.new(0, 3.2, 0)
                     bb.AlwaysOnTop = true
-                    local lbl = INew("TextLabel", bb)
+                    bb.Parent = e.model
+                    local lbl = INew("TextLabel")
                     lbl.Size = UDim2New(1, 0, 1, 0)
                     lbl.BackgroundTransparency = 1
                     lbl.TextColor3 = FromRGB(255, 90, 90)
                     lbl.TextSize = 11
                     lbl.Font = Enum.Font.GothamBold
                     lbl.TextStrokeTransparency = 0
-                    local hl = INew("Highlight", e.model)
+                    lbl.Parent = bb
+                    local hl = INew("Highlight")
                     hl.FillColor = FromRGB(255, 60, 60)
                     hl.OutlineColor = FromRGB(255, 255, 255)
                     hl.FillTransparency = 0.72
+                    hl.Parent = e.model
                     espCache[e.model] = {bb=bb, hl=hl, lbl=lbl}
                 else
                     c.lbl.Text = string.format("%s [%d]", e.model.Name, math.floor(e.humanoid.Health))
@@ -633,13 +688,23 @@ local function godRun(isAlive)
 end
 
 -- ============================================================
--- UI
+-- UI  ── CanvasGroup transparency bug avoided: start at 0,
+--         entrance animation via UIScale pop.
 -- ============================================================
 if CoreGui:FindFirstChild("DQR_VANTA") then CoreGui.DQR_VANTA:Destroy() end
 
-local Pad = IsMobile and 16 or 14
-local PanelW = IsMobile and 340 or 400
-local PanelH = IsMobile and 500 or 540
+local Pad      = IsMobile and 14 or 14
+local PanelW   = IsMobile and 340 or 400
+local PanelH   = IsMobile and 500 or 540
+
+-- clamp to viewport so panel never runs off the narrow mobile screen
+local vp0 = Camera.ViewportSize
+if vp0.X and vp0.X < PanelW + 40 then
+    PanelW = math.max(260, vp0.X - 40)
+end
+if vp0.Y and vp0.Y < PanelH + 40 then
+    PanelH = math.max(360, vp0.Y - 80)
+end
 
 local ScreenGui = Create("ScreenGui", {
     Parent = CoreGui,
@@ -652,20 +717,26 @@ local ScreenGui = Create("ScreenGui", {
 
 local UIScale = Create("UIScale", {Parent = ScreenGui, Scale = 1})
 
+-- Main panel — created fully opaque. GroupTransparency stays at 0.
 local Main = Create("CanvasGroup", {
     Parent = ScreenGui,
     AnchorPoint = Vec2New(0.5, 0.5),
-    Position = UDim2New(0.5, 0, 0.5, 20),
+    Position = UDim2New(0.5, 0, 0.5, 0),
     Size = UDim2New(0, PanelW, 0, PanelH),
     BackgroundColor3 = Theme.Background,
     BorderSizePixel = 0,
     ClipsDescendants = true,
-    GroupTransparency = 1,
+    GroupTransparency = 0,
     ZIndex = 2,
 })
 Corner(Main, 12)
 Stroke(Main, Theme.Border, 0.9)
 
+-- entrance: scale pop (executor-agnostic — no composite property tween)
+local OpenScale = Create("UIScale", {Parent = Main, Scale = 0.85})
+Tween(OpenScale, TweenInfo.new(0.42, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1})
+
+-- drag strip
 local DragArea = Create("Frame", {
     Parent = Main,
     Size = UDim2New(1, 0, 0, 52),
@@ -701,33 +772,34 @@ Create("UIListLayout", {
     VerticalAlignment = Enum.VerticalAlignment.Center,
     SortOrder = Enum.SortOrder.LayoutOrder,
 })
-local function BrandPart(Text, Color, Order)
+
+local function brandPart(text, col, order)
     return Create("TextLabel", {
         Parent = BrandRow,
         Size = UDim2New(0, 0, 1, 0),
         AutomaticSize = Enum.AutomaticSize.X,
         BackgroundTransparency = 1,
         FontFace = FontFace,
-        Text = Text,
-        TextColor3 = Color,
+        Text = text,
+        TextColor3 = col,
         TextSize = 16,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Center,
-        LayoutOrder = Order,
+        LayoutOrder = order,
         ZIndex = 5,
     })
 end
-BrandPart("dungeon", Theme.Accent, 1)
-BrandPart("quest", Theme.Text, 2)
-BrandPart(" reborn", Theme.Muted, 3)
+brandPart("dungeon", Theme.Accent, 1)
+brandPart("quest",   Theme.Text,   2)
+brandPart(" reborn", Theme.Muted,  3)
 
-local Subtitle = Create("TextLabel", {
+Create("TextLabel", {
     Parent = Main,
     Size = UDim2New(1, -Pad*2, 0, 16),
     Position = UDim2New(0, Pad, 0, Pad + 24),
     BackgroundTransparency = 1,
     FontFace = FontFace,
-    Text = "vanta build · no keysystem · mobile ready",
+    Text = "vanta build · no keysystem · mobile",
     TextColor3 = Theme.Muted,
     TextSize = 11,
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -746,11 +818,15 @@ local Scroll = Create("ScrollingFrame", {
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
     ZIndex = 4,
 })
-Create("UIListLayout", {Parent = Scroll, Padding = UDimNew(0, 6), SortOrder = Enum.SortOrder.LayoutOrder})
+Create("UIListLayout", {
+    Parent = Scroll,
+    Padding = UDimNew(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+})
 
 local Toggles = {}
 local function section(text)
-    local s = Create("TextLabel", {
+    Create("TextLabel", {
         Parent = Scroll,
         Size = UDim2New(1, 0, 0, 24),
         BackgroundTransparency = 1,
@@ -774,7 +850,8 @@ local function toggle(label, default, cb)
     })
     Corner(Btn, 9)
     Stroke(Btn, Theme.Border, 0.92)
-    local Lbl = Create("TextLabel", {
+
+    Create("TextLabel", {
         Parent = Btn,
         Size = UDim2New(1, -72, 1, 0),
         Position = UDim2New(0, 14, 0, 0),
@@ -784,196 +861,38 @@ local function toggle(label, default, cb)
         TextColor3 = Theme.Text,
         TextSize = 12,
         TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 5,
     })
+
     local Track = Create("Frame", {
         Parent = Btn,
         Size = UDim2New(0, 42, 0, 22),
         Position = UDim2New(1, -54, 0.5, -11),
-        BackgroundColor3 = default and Theme.Success or FromRGB(40,42,52),
+        BackgroundColor3 = default and Theme.Success or Theme.TrackOff,
         BorderSizePixel = 0,
+        ZIndex = 5,
     })
     Corner(Track, 11)
+
     local Dot = Create("Frame", {
         Parent = Track,
         Size = UDim2New(0, 16, 0, 16),
         Position = default and UDim2New(1, -18, 0.5, -8) or UDim2New(0, 2, 0.5, -8),
-        BackgroundColor3 = FromRGB(228,230,240),
+        BackgroundColor3 = Theme.Dot,
         BorderSizePixel = 0,
+        ZIndex = 6,
     })
     Corner(Dot, 8)
+
     local st = default or false
     local function set(v)
         st = v
-        Tween(Track, nil, {BackgroundColor3 = st and Theme.Success or FromRGB(40,42,52)})
+        Tween(Track, nil, {BackgroundColor3 = st and Theme.Success or Theme.TrackOff})
         Tween(Dot, nil, {Position = st and UDim2New(1,-18,0.5,-8) or UDim2New(0,2,0.5,-8)})
         if cb then cb(st) end
     end
     Btn.MouseButton1Click:Connect(function() set(not st) end)
     Btn.MouseEnter:Connect(function() Tween(Btn, nil, {BackgroundColor3 = Theme.Hover}) end)
     Btn.MouseLeave:Connect(function() Tween(Btn, nil, {BackgroundColor3 = Theme.Element}) end)
-    Toggles[label] = {set=set, get=function() return st end}
-end
 
-local function button(label, cb)
-    local Btn = Create("TextButton", {
-        Parent = Scroll,
-        Size = UDim2New(1, 0, 0, 36),
-        BackgroundColor3 = Theme.Ghost,
-        FontFace = FontFace,
-        Text = label,
-        TextColor3 = Theme.Text,
-        TextSize = 12,
-        BorderSizePixel = 0,
-        AutoButtonColor = false,
-        ZIndex = 4,
-    })
-    Corner(Btn, 9)
-    Stroke(Btn, Theme.Border, 0.92)
-    Btn.MouseEnter:Connect(function() Tween(Btn, nil, {BackgroundColor3 = Theme.Hover}) end)
-    Btn.MouseLeave:Connect(function() Tween(Btn, nil, {BackgroundColor3 = Theme.Ghost}) end)
-    Btn.MouseButton1Click:Connect(cb)
-end
-
--- drag
-do
-    local dragging, dragStart, startPos
-    DragArea.InputBegan:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        dragging = true; dragStart = input.Position; startPos = Main.Position
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if not dragging then return end
-        if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        local delta = (input.Position - dragStart) / (UIScale.Scale or 1)
-        Main.Position = UDim2New(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-end
-
-CloseBtn.MouseButton1Click:Connect(function()
-    local here = Main.Position
-    Tween(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-        GroupTransparency = 1,
-        Position = UDim2New(here.X.Scale, here.X.Offset, here.Y.Scale, here.Y.Offset + 12),
-    })
-    task.wait(0.22)
-    ScreenGui:Destroy()
-end)
-
--- ============================================================
--- WIRING
--- ============================================================
-section("Combat")
-toggle("Auto Farm", false, function(v)
-    State.AutoFarm = v
-    if v then
-        Scheduler.run("Farm", farmRun)
-    else
-        Scheduler.stop("Farm")
-    end
-end)
-toggle("Fly Farm (hover above)", false, function(v) State.FlyFarm = v end)
-toggle("Auto Attack", false, function(v)
-    State.AutoAttack = v
-    if v then Scheduler.run("Attack", attackRun) else Scheduler.stop("Attack") end
-end)
-toggle("Auto Skill", false, function(v)
-    State.AutoSkill = v
-    if v then Scheduler.run("Skill", skillRun) else Scheduler.stop("Skill") end
-end)
-toggle("Kill Aura", false, function(v)
-    State.KillAura = v
-    if v then Scheduler.run("Aura", auraRun) else Scheduler.stop("Aura") end
-end)
-toggle("Auto Dodge", false, function(v)
-    State.AutoDodge = v
-    if v then Scheduler.run("Dodge", dodgeRun) else Scheduler.stop("Dodge") end
-end)
-
-section("Dungeon")
-toggle("Auto Start", false, function(v) State.AutoStart = v end)
-toggle("Auto Replay", false, function(v) State.AutoReplay = v end)
-toggle("Auto Back Lobby", false, function(v) State.AutoBackLobby = v end)
-
-section("Inventory")
-toggle("Auto Equip Best", false, function(v) State.AutoEquip = v end)
-toggle("Auto Sell", false, function(v) State.AutoSell = v end)
-
-section("Movement")
-toggle("Anti-AFK", false, function(v)
-    State.AntiAFK = v
-    if v then Scheduler.run("AFK", afkRun) else Scheduler.stop("AFK") end
-end)
-toggle("WalkSpeed 120", false, function(v)
-    State.WalkSpeed = v
-    local h = getHum()
-    if h then h.WalkSpeed = v and 120 or 16 end
-end)
-toggle("Fly (gamepad)", false, function(v)
-    State.Fly = v
-    if v then enableFlyHover() else disableFlyHover() end
-end)
-toggle("NoClip", false, function(v)
-    State.NoClip = v
-    if v then
-        RunService.Stepped:Connect(function()
-            if not State.NoClip then return end
-            local c = LP.Character
-            if c then for _, p in ipairs(c:GetDescendants()) do
-                if p:IsA("BasePart") then p.CanCollide = false end
-            end end
-        end)
-    end
-end)
-toggle("Infinite Jump", false, function(v)
-    State.InfiniteJump = v
-    if v then
-        UserInputService.JumpRequest:Connect(function()
-            if not State.InfiniteJump then return end
-            local h = getHum()
-            if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
-        end)
-    end
-end)
-
-section("Visual")
-toggle("ESP", false, function(v)
-    State.ESP = v
-    if v then Scheduler.run("ESP", espRun) else Scheduler.stop("ESP"); espClear() end
-end)
-toggle("God Mode", false, function(v)
-    State.GodMode = v
-    if v then Scheduler.run("God", godRun) else Scheduler.stop("God") end
-end)
-
-section("Actions")
-button("Teleport to Nearest", function()
-    local t = getNearest(9999)
-    local r = getRoot()
-    if t and r then r.CFrame = t.root.CFrame + Vector3.new(0, 3, 0) end
-end)
-button("Clear All", function()
-    Scheduler.stop("Farm"); Scheduler.stop("Attack"); Scheduler.stop("Skill")
-    Scheduler.stop("Aura"); Scheduler.stop("Dodge"); Scheduler.stop("AFK")
-    Scheduler.stop("ESP");  Scheduler.stop("God")
-    for _, t in pairs(Toggles) do t.set(false) end
-    flyStop(); disableFlyHover(); espClear()
-    local h = getHum()
-    if h then h.WalkSpeed = 16 end
-end)
-
--- inventory/dungeon always-on scanners (run once, check state internally)
-Scheduler.run("Inventory", inventoryRun)
-Scheduler.run("Dungeon", dungeonRun)
-
--- open animation
-Tween(Main, TweenInfo.new(0.48, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-    GroupTransparency = 0,
-    Position = UDim2New(0.5, 0, 0.5, 0),
-})
-
-return true
+    Toggles[label]
