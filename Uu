@@ -1,0 +1,452 @@
+--[[
+    Dungeon Quest Reborn - Full Cheat Suite
+    UI: Click the button or press RightShift to open/close
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local VirtualUser = game:GetService("VirtualUser")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+-- ===================== CONFIG =====================
+local Config = {
+    AutoFarm = false,
+    AutoAttack = false,
+    AutoSkill = false,
+    KillAura = false,
+    KillAuraRange = 28,
+    BossFarm = false,
+    AggroMode = false,
+    FarmDistance = 7,
+    FarmHeight = 6,
+
+    AutoDungeon = false,
+    AutoStart = false,
+    AutoReplay = false,
+    AutoBackToLobby = false,
+    Difficulty = "Nightmare",
+    Hardcore = false,
+
+    AutoEquipBest = false,
+    AutoSell = false,
+    KeepEquipped = true,
+
+    ESP = false,
+    WalkSpeed = 16,
+    Fly = false,
+    FlySpeed = 55,
+    InfiniteJump = false,
+    NoClip = false,
+    GodMode = false,
+
+    AntiAFK = true,
+}
+
+-- ===================== UTILS =====================
+local function GetChar()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    return char, hum, root
+end
+
+local function Notify(title, text)
+    pcall(function()
+        game.StarterGui:SetCore("SendNotification", {Title = title, Text = text, Duration = 3})
+    end)
+end
+
+-- Anti AFK
+if Config.AntiAFK then
+    LocalPlayer.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end)
+end
+
+-- ===================== GOD MODE =====================
+local GodConn
+local function SetGodMode(state)
+    Config.GodMode = state
+    if GodConn then GodConn:Disconnect() end
+    if state then
+        GodConn = RunService.Heartbeat:Connect(function()
+            local _, hum = GetChar()
+            if hum then hum.Health = hum.MaxHealth end
+        end)
+    end
+end
+
+-- ===================== FLY =====================
+local FlyBV, FlyBG
+local function SetFly(state)
+    Config.Fly = state
+    local char, hum, root = GetChar()
+    if not root then return end
+    if state then
+        FlyBV = Instance.new("BodyVelocity")
+        FlyBV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        FlyBV.Velocity = Vector3.zero
+        FlyBV.Parent = root
+        FlyBG = Instance.new("BodyGyro")
+        FlyBG.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        FlyBG.P = 9e4
+        FlyBG.Parent = root
+        hum.PlatformStand = true
+    else
+        if FlyBV then FlyBV:Destroy() end
+        if FlyBG then FlyBG:Destroy() end
+        if hum then hum.PlatformStand = false end
+    end
+end
+
+RunService.RenderStepped:Connect(function()
+    local char, hum, root = GetChar()
+    if not root or not hum then return end
+
+    hum.WalkSpeed = Config.WalkSpeed
+
+    if Config.Fly and FlyBV and FlyBG then
+        local cam = workspace.CurrentCamera
+        local move = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0,1,0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move = move + Vector3.new(0,-1,0) end
+        FlyBV.Velocity = move.Magnitude > 0 and move.Unit * Config.FlySpeed or Vector3.zero
+        FlyBG.CFrame = cam.CFrame
+    end
+
+    if Config.NoClip then
+        for _, p in pairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false end
+        end
+    end
+end)
+
+UserInputService.JumpRequest:Connect(function()
+    if Config.InfiniteJump then
+        local _, hum = GetChar()
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+
+-- ===================== ESP =====================
+local ESPFolder = Instance.new("Folder", CoreGui)
+ESPFolder.Name = "DQRESP"
+
+local function ClearESP()
+    ESPFolder:ClearAllChildren()
+end
+
+local function AddESP(part, name, color)
+    local bill = Instance.new("BillboardGui")
+    bill.Adornee = part
+    bill.Size = UDim2.new(0, 120, 0, 30)
+    bill.AlwaysOnTop = true
+    bill.Parent = ESPFolder
+    local lbl = Instance.new("TextLabel", bill)
+    lbl.Size = UDim2.new(1,0,1,0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = name
+    lbl.TextColor3 = color
+    lbl.TextStrokeTransparency = 0.3
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 13
+end
+
+local function UpdateESP()
+    ClearESP()
+    if not Config.ESP then return end
+    for _, m in pairs(workspace:GetDescendants()) do
+        if m:IsA("Model") and m:FindFirstChild("Humanoid") and m:FindFirstChild("HumanoidRootPart") then
+            if not Players:GetPlayerFromCharacter(m) and m.Humanoid.Health > 0 then
+                local isBoss = m.Name:lower():find("boss")
+                AddESP(m.HumanoidRootPart, m.Name .. " | " .. math.floor(m.Humanoid.Health), isBoss and Color3.fromRGB(255,140,0) or Color3.fromRGB(255,60,60))
+            end
+        end
+    end
+end
+
+-- ===================== COMBAT =====================
+local function GetNearest(range)
+    local closest, dist = nil, range or 40
+    local _, _, root = GetChar()
+    if not root then return nil end
+    for _, m in pairs(workspace:GetDescendants()) do
+        if m:IsA("Model") and m:FindFirstChild("Humanoid") and m:FindFirstChild("HumanoidRootPart") then
+            if not Players:GetPlayerFromCharacter(m) and m.Humanoid.Health > 0 then
+                local d = (m.HumanoidRootPart.Position - root.Position).Magnitude
+                if d < dist then
+                    closest = m
+                    dist = d
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local function Attack(target)
+    if not target then return end
+    pcall(function()
+        local remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage
+        local r = remotes:FindFirstChild("Attack") or remotes:FindFirstChild("Swing") or remotes:FindFirstChild("Damage")
+        if r then r:FireServer(target) end
+    end)
+    VirtualUser:ClickButton1(Vector2.new())
+end
+
+RunService.Heartbeat:Connect(function()
+    local _, _, root = GetChar()
+    if not root then return end
+
+    if Config.KillAura or Config.AutoAttack or Config.AutoFarm or Config.BossFarm then
+        local target = GetNearest(Config.KillAura and Config.KillAuraRange or 45)
+        if target then
+            if Config.AutoFarm or Config.BossFarm then
+                root.CFrame = CFrame.new(target.HumanoidRootPart.Position + Vector3.new(0, Config.FarmHeight, Config.FarmDistance))
+            end
+            if Config.AutoAttack or Config.KillAura then
+                Attack(target)
+            end
+        end
+    end
+
+    if Config.AutoSkill then
+        pcall(function()
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage
+            for _, r in pairs(remotes:GetChildren()) do
+                if r.Name:lower():find("skill") or r.Name:lower():find("ability") then
+                    r:FireServer()
+                end
+            end
+        end)
+    end
+end)
+
+-- ===================== UI =====================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "DQRCheatUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = CoreGui
+
+-- Toggle Button (always visible)
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Name = "Toggle"
+ToggleBtn.Size = UDim2.new(0, 50, 0, 50)
+ToggleBtn.Position = UDim2.new(1, -70, 0, 20)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+ToggleBtn.Text = "DQ"
+ToggleBtn.TextColor3 = Color3.new(1,1,1)
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.TextSize = 18
+ToggleBtn.Parent = ScreenGui
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 12)
+
+-- Main Frame
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 300, 0, 0) -- starts closed
+Main.Position = UDim2.new(1, -320, 0, 80)
+Main.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+Main.BorderSizePixel = 0
+Main.ClipsDescendants = true
+Main.Parent = ScreenGui
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
+
+local UIStroke = Instance.new("UIStroke", Main)
+UIStroke.Color = Color3.fromRGB(0, 170, 255)
+UIStroke.Thickness = 1.5
+
+-- Title Bar
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 36)
+TitleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = Main
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -40, 1, 0)
+Title.Position = UDim2.new(0, 12, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "Dungeon Quest Reborn"
+Title.TextColor3 = Color3.fromRGB(0, 200, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 15
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TitleBar
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+CloseBtn.Position = UDim2.new(1, -33, 0, 3)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Text = "×"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 80, 80)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 22
+CloseBtn.Parent = TitleBar
+
+-- Scrolling Frame
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Size = UDim2.new(1, -10, 1, -46)
+Scroll.Position = UDim2.new(0, 5, 0, 40)
+Scroll.BackgroundTransparency = 1
+Scroll.ScrollBarThickness = 4
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(0, 170, 255)
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 680)
+Scroll.Parent = Main
+
+local List = Instance.new("UIListLayout")
+List.SortOrder = Enum.SortOrder.LayoutOrder
+List.Padding = UDim.new(0, 6)
+List.Parent = Scroll
+
+-- Helper: Create Section Label
+local function Section(text)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -10, 0, 22)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(0, 180, 255)
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 13
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = Scroll
+end
+
+-- Helper: Create Toggle
+local function Toggle(name, default, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -10, 0, 32)
+    btn.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+    btn.Text = ""
+    btn.Parent = Scroll
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -50, 1, 0)
+    label.Position = UDim2.new(0, 12, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextColor3 = Color3.fromRGB(220, 220, 220)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 13
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = btn
+
+    local indicator = Instance.new("Frame")
+    indicator.Size = UDim2.new(0, 18, 0, 18)
+    indicator.Position = UDim2.new(1, -28, 0.5, -9)
+    indicator.BackgroundColor3 = default and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(60, 60, 70)
+    indicator.Parent = btn
+    Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
+
+    local state = default
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        indicator.BackgroundColor3 = state and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(60, 60, 70)
+        callback(state)
+    end)
+end
+
+-- Build UI
+Section("COMBAT")
+Toggle("Auto Farm", false, function(v) Config.AutoFarm = v end)
+Toggle("Auto Attack", false, function(v) Config.AutoAttack = v end)
+Toggle("Kill Aura", false, function(v) Config.KillAura = v end)
+Toggle("Auto Skill", false, function(v) Config.AutoSkill = v end)
+Toggle("Boss Farm", false, function(v) Config.BossFarm = v end)
+
+Section("MOVEMENT")
+Toggle("Fly", false, function(v) SetFly(v) end)
+Toggle("NoClip", false, function(v) Config.NoClip = v end)
+Toggle("Infinite Jump", false, function(v) Config.InfiniteJump = v end)
+Toggle("God Mode", false, function(v) SetGodMode(v) end)
+
+Section("VISUAL")
+Toggle("ESP", false, function(v)
+    Config.ESP = v
+    if not v then ClearESP() end
+end)
+
+Section("DUNGEON")
+Toggle("Auto Replay", false, function(v) Config.AutoReplay = v end)
+Toggle("Auto Dungeon", false, function(v) Config.AutoDungeon = v end)
+
+Section("MISC")
+Toggle("Anti AFK", true, function(v) Config.AntiAFK = v end)
+
+-- WalkSpeed box
+local SpeedFrame = Instance.new("Frame")
+SpeedFrame.Size = UDim2.new(1, -10, 0, 36)
+SpeedFrame.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+SpeedFrame.Parent = Scroll
+Instance.new("UICorner", SpeedFrame).CornerRadius = UDim.new(0, 6)
+
+local SpeedLabel = Instance.new("TextLabel")
+SpeedLabel.Size = UDim2.new(0.5, 0, 1, 0)
+SpeedLabel.Position = UDim2.new(0, 12, 0, 0)
+SpeedLabel.BackgroundTransparency = 1
+SpeedLabel.Text = "WalkSpeed"
+SpeedLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+SpeedLabel.Font = Enum.Font.Gotham
+SpeedLabel.TextSize = 13
+SpeedLabel.TextXAlignment = Enum.TextXAlignment.Left
+SpeedLabel.Parent = SpeedFrame
+
+local SpeedBox = Instance.new("TextBox")
+SpeedBox.Size = UDim2.new(0, 60, 0, 24)
+SpeedBox.Position = UDim2.new(1, -72, 0.5, -12)
+SpeedBox.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+SpeedBox.Text = "16"
+SpeedBox.TextColor3 = Color3.new(1,1,1)
+SpeedBox.Font = Enum.Font.Gotham
+SpeedBox.TextSize = 13
+SpeedBox.Parent = SpeedFrame
+Instance.new("UICorner", SpeedBox).CornerRadius = UDim.new(0, 4)
+
+SpeedBox.FocusLost:Connect(function()
+    local n = tonumber(SpeedBox.Text)
+    if n and n >= 1 and n <= 200 then
+        Config.WalkSpeed = n
+    else
+        SpeedBox.Text = tostring(Config.WalkSpeed)
+    end
+end)
+
+-- Open / Close logic
+local open = false
+local function ToggleUI()
+    open = not open
+    local targetSize = open and UDim2.new(0, 300, 0, 460) or UDim2.new(0, 300, 0, 0)
+    TweenService:Create(Main, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {Size = targetSize}):Play()
+end
+
+ToggleBtn.MouseButton1Click:Connect(ToggleUI)
+CloseBtn.MouseButton1Click:Connect(ToggleUI)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        ToggleUI()
+    end
+end)
+
+-- ESP loop
+RunService.RenderStepped:Connect(function()
+    if Config.ESP then UpdateESP() end
+end)
+
+Notify("Dungeon Quest Reborn", "UI loaded • RightShift or click DQ button")
+print("Dungeon Quest Reborn cheat loaded – RightShift to toggle UI")
