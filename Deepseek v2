@@ -1,0 +1,848 @@
+-- language: Lua, file: dqr_vanta_loader.lua, target: Roblox Dungeon Quest Reborn
+-- loader shell modeled on sportsclub pattern — keysystem stripped, straight to hub
+
+repeat task.wait() until game:IsLoaded()
+
+if LPH_OBFUSCATED == nil then
+    LPH_NO_VIRTUALIZE = function(...) return (...) end
+    LPH_ENCSTR = function(...) return (...) end
+    LRM_SANITIZE = function(...) return ... end
+end
+
+local cloneref = cloneref or function(o) return o end
+
+local Players          = cloneref(game:GetService("Players"))
+local RunService       = cloneref(game:GetService("RunService"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+local TweenService     = cloneref(game:GetService("TweenService"))
+local CoreGui          = cloneref(game:GetService("CoreGui"))
+local VirtualUser      = cloneref(game:GetService("VirtualUser"))
+local VirtualInputManager = cloneref(game:GetService("VirtualInputManager"))
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+
+local LP     = cloneref(Players.LocalPlayer)
+local Camera = workspace.CurrentCamera
+
+local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled and not UserInputService.MouseEnabled
+
+if identifyexecutor and identifyexecutor() == "Wave" then
+    getgenv().gethui = function() return CoreGui end
+end
+
+-- ============================================================
+-- THEME
+-- ============================================================
+local FromRGB  = Color3.fromRGB
+local UDim2New = UDim2.new
+local UDimNew  = UDim.new
+local Vec2New  = Vector2.new
+local INew     = Instance.new
+
+local Theme = {
+    Background = FromRGB(8, 9, 12),
+    Element    = FromRGB(16, 18, 21),
+    Ghost      = FromRGB(22, 25, 30),
+    Hover      = FromRGB(28, 32, 39),
+    Text       = FromRGB(235, 238, 245),
+    Muted      = FromRGB(141, 148, 163),
+    Inactive   = FromRGB(141, 148, 163),
+    Accent     = FromRGB(61, 158, 255),
+    AccentHover= FromRGB(10, 124, 255),
+    Border     = FromRGB(255, 255, 255),
+    Danger     = FromRGB(220, 70, 70),
+    Success    = FromRGB(70, 190, 120),
+    Purple     = FromRGB(160, 100, 240),
+}
+
+local FontFace do
+    local Ok, Face = pcall(function()
+        return Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Medium, Enum.FontStyle.Normal)
+    end)
+    FontFace = (Ok and Face) or Font.fromEnum(Enum.Font.GothamMedium)
+end
+
+local function Create(Class, Props)
+    local Inst = INew(Class)
+    for Key, Value in Props do
+        if Key ~= "Parent" then Inst[Key] = Value end
+    end
+    if Props.Parent then Inst.Parent = Props.Parent end
+    return Inst
+end
+
+local function Corner(Parent, R)
+    return Create("UICorner", {Parent = Parent, CornerRadius = UDimNew(0, R or 6)})
+end
+
+local function Stroke(Parent, Col, Trans)
+    return Create("UIStroke", {
+        Parent = Parent,
+        Color = Col or Theme.Border,
+        Thickness = 1,
+        Transparency = Trans or 0.9,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    })
+end
+
+local function Tween(Inst, Info, Goal)
+    local tw = TweenService:Create(Inst, Info or TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), Goal)
+    tw:Play()
+    return tw
+end
+
+-- ============================================================
+-- STATE
+-- ============================================================
+local State = {
+    AutoFarm=false, AutoAttack=false, AutoSkill=false, KillAura=false,
+    AutoDodge=false, AutoStart=false, AutoReplay=false, AutoBackLobby=false,
+    AutoSell=false, AutoEquip=false, AntiAFK=false, WalkSpeed=false,
+    Fly=false, InfiniteJump=false, NoClip=false, ESP=false, GodMode=false,
+    FlyFarm=false,
+}
+
+local Scheduler = {tokens={}, threads={}}
+function Scheduler.newToken(key)
+    Scheduler.tokens[key] = (Scheduler.tokens[key] or 0) + 1
+    local tok = Scheduler.tokens[key]
+    if Scheduler.threads[key] then
+        pcall(function() task.cancel(Scheduler.threads[key]) end)
+        Scheduler.threads[key] = nil
+    end
+    return tok
+end
+function Scheduler.isCurrent(key, tok) return Scheduler.tokens[key] == tok end
+function Scheduler.run(key, fn)
+    local tok = Scheduler.newToken(key)
+    Scheduler.threads[key] = task.spawn(function()
+        fn(function() return Scheduler.isCurrent(key, tok) end)
+    end)
+    return tok
+end
+function Scheduler.stop(key)
+    Scheduler.tokens[key] = (Scheduler.tokens[key] or 0) + 1
+    if Scheduler.threads[key] then
+        pcall(function() task.cancel(Scheduler.threads[key]) end)
+        Scheduler.threads[key] = nil
+    end
+end
+
+-- ============================================================
+-- CORE
+-- ============================================================
+local function getHum()
+    local c = LP.Character
+    return c and c:FindFirstChildOfClass("Humanoid") or nil
+end
+local function getRoot()
+    local c = LP.Character
+    return c and c:FindFirstChild("HumanoidRootPart") or nil
+end
+local function getTool()
+    local c = LP.Character
+    return c and c:FindFirstChildOfClass("Tool") or nil
+end
+
+-- ============================================================
+-- PERCEPTION
+-- ============================================================
+local cachedContainer, containerRescanAt = nil, 0
+local function findContainer()
+    local now = tick()
+    if cachedContainer and cachedContainer.Parent and now < containerRescanAt then
+        return cachedContainer
+    end
+    for _, name in ipairs({"Enemies","Mobs","Monsters","NPCs","Units","DungeonMobs","DungeonEnemies","Spawns","ActiveEnemies","WaveEnemies","Bosses","Hostiles"}) do
+        local f = workspace:FindFirstChild(name)
+        if f then cachedContainer = f; containerRescanAt = now + 10; return f end
+    end
+    for _, f in ipairs(workspace:GetChildren()) do
+        if f:IsA("Folder") or f:IsA("Model") then
+            for _, d in ipairs(f:GetChildren()) do
+                if d:IsA("Model") and d:FindFirstChildOfClass("Humanoid") then
+                    cachedContainer = f; containerRescanAt = now + 10; return f
+                end
+            end
+        end
+    end
+    cachedContainer = workspace; containerRescanAt = now + 3
+    return workspace
+end
+
+local function getEnemies()
+    local out = {}
+    local myChar = LP.Character
+    for _, obj in ipairs(findContainer():GetDescendants()) do
+        if obj:IsA("Model") and obj ~= myChar then
+            local h = obj:FindFirstChildOfClass("Humanoid")
+            if h and h.Health > 0 and not Players:GetPlayerFromCharacter(obj) then
+                local r = obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart or obj:FindFirstChild("Torso")
+                if r then out[#out+1] = {model=obj, humanoid=h, root=r} end
+            end
+        end
+    end
+    return out
+end
+
+local function getNearest(maxDist)
+    local mr = getRoot()
+    if not mr then return nil end
+    local best, bestD = nil, maxDist or math.huge
+    for _, e in ipairs(getEnemies()) do
+        local d = (e.root.Position - mr.Position).Magnitude
+        if d < bestD then bestD = d; best = e end
+    end
+    return best, bestD
+end
+
+local function getIncoming(radius)
+    local mr = getRoot()
+    if not mr then return {} end
+    local out = {}
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj:IsA("BasePart") then
+            local n = obj.Name:lower()
+            for _, pat in ipairs({"projectile","bullet","arrow","orb","spell","fireball","bolt"}) do
+                if n:find(pat) then
+                    local d = (obj.Position - mr.Position).Magnitude
+                    if d <= radius then
+                        local v = obj.AssemblyLinearVelocity
+                        if v.Magnitude > 8 then
+                            out[#out+1] = {part=obj, vel=v, dist=d}
+                        end
+                    end
+                    break
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- ============================================================
+-- NAV (walking, no teleport)
+-- ============================================================
+local lastPos, stuckSince = Vector3.zero, 0
+local function walkTo(p)
+    local h = getHum()
+    if h then h:MoveTo(p) end
+end
+local function detectStuck()
+    local r = getRoot()
+    if not r then return false end
+    local moved = (r.Position - lastPos).Magnitude
+    lastPos = r.Position
+    if moved < 0.5 then
+        if stuckSince == 0 then stuckSince = tick() end
+        if tick() - stuckSince > 1.2 then stuckSince = 0; return true end
+    else
+        stuckSince = 0
+    end
+    return false
+end
+
+-- ============================================================
+-- FLY-FARM (hover above enemy, out of melee reach)
+-- ============================================================
+local FlyFarm = {bv=nil, bg=nil, alt=22, standoff=6}
+local function flyStart()
+    local r = getRoot()
+    if not r then return end
+    if FlyFarm.bv then FlyFarm.bv:Destroy() end
+    if FlyFarm.bg then FlyFarm.bg:Destroy() end
+    local bv = INew("BodyVelocity", r)
+    bv.MaxForce = Vector3.new(1e6, 1e6, 1e6); bv.P = 5000; bv.Velocity = Vector3.zero
+    local bg = INew("BodyGyro", r)
+    bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6); bg.P = 8000; bg.D = 500
+    bg.CFrame = r.CFrame
+    FlyFarm.bv, FlyFarm.bg = bv, bg
+end
+local function flyStop()
+    if FlyFarm.bv then pcall(function() FlyFarm.bv:Destroy() end); FlyFarm.bv = nil end
+    if FlyFarm.bg then pcall(function() FlyFarm.bg:Destroy() end); FlyFarm.bg = nil end
+end
+local function flyTick()
+    local r = getRoot()
+    if not r or not FlyFarm.bv then return end
+    local target = getNearest(300)
+    local desired
+    if target then
+        local base = target.root.Position
+        local dx, dz = r.Position.X - base.X, r.Position.Z - base.Z
+        local mag = math.sqrt(dx*dx + dz*dz)
+        if mag < 0.1 then dx, dz, mag = 1, 0, 1 end
+        desired = Vector3.new(base.X + (dx/mag) * FlyFarm.standoff, base.Y + FlyFarm.alt, base.Z + (dz/mag) * FlyFarm.standoff)
+        FlyFarm.bg.CFrame = CFrame.lookAt(r.Position, Vector3.new(base.X, base.Y, base.Z))
+    else
+        desired = r.Position
+    end
+    local delta = desired - r.Position
+    local horiz = Vector3.new(delta.X, 0, delta.Z) * 3
+    local vert  = math.clamp(delta.Y * 4, -80, 80)
+    local cur = r.AssemblyLinearVelocity or Vector3.zero
+    FlyFarm.bv.Velocity = horiz + Vector3.new(0, vert - cur.Y * 0.6, 0)
+end
+
+-- ============================================================
+-- CLICK (3-path activation)
+-- ============================================================
+local Clicker = {remote=nil, scanAt=0}
+local function screenCenter()
+    local vp = Camera.ViewportSize
+    return Vec2New(vp.X * 0.5, vp.Y * 0.5)
+end
+local function scanRemote(tool)
+    for _, d in ipairs(tool:GetDescendants()) do
+        if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then return d end
+    end
+    return nil
+end
+local function click()
+    local tool = getTool()
+    if not tool then return end
+    pcall(function() tool:Activate() end)
+    local now = tick()
+    if not Clicker.remote or now > Clicker.scanAt then
+        Clicker.remote = scanRemote(tool); Clicker.scanAt = now + 20
+    end
+    if Clicker.remote then
+        pcall(function()
+            if Clicker.remote:IsA("RemoteEvent") then Clicker.remote:FireServer()
+            elseif Clicker.remote:IsA("RemoteFunction") then Clicker.remote:InvokeServer() end
+        end)
+    end
+    local p = screenCenter()
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(p.X, p.Y, 0, true,  game, 0)
+        task.wait(0.02 + math.random() * 0.02)
+        VirtualInputManager:SendMouseButtonEvent(p.X, p.Y, 0, false, game, 0)
+    end)
+end
+
+-- ============================================================
+-- SKILL FSM (single-flight)
+-- ============================================================
+local Skill = {slots={"Q","E"}, cd={Q=3.5, E=6.0}, last={Q=0, E=0}, inFlight=false, flightDur=0.55}
+local function skillPress(slot)
+    local k = Enum.KeyCode[slot]
+    if not k then return end
+    Skill.inFlight = true
+    local ok = pcall(function()
+        VirtualInputManager:SendKeyEvent(true, k, false, game)
+        task.wait(0.045 + math.random() * 0.02)
+        VirtualInputManager:SendKeyEvent(false, k, false, game)
+    end)
+    task.spawn(function()
+        task.wait(Skill.flightDur); Skill.inFlight = false
+    end)
+    if ok then Skill.last[slot] = tick() end
+end
+local function skillRun(isAlive)
+    while isAlive() do
+        if State.AutoSkill and getHum() and getHum().Health > 0 then
+            local now = tick()
+            if not Skill.inFlight then
+                for _, slot in ipairs(Skill.slots) do
+                    if (now - Skill.last[slot]) >= Skill.cd[slot] then
+                        skillPress(slot); break
+                    end
+                end
+            end
+        end
+        task.wait(0.1)
+    end
+end
+
+-- ============================================================
+-- ATTACK LOOP
+-- ============================================================
+local function attackRun(isAlive)
+    while isAlive() do
+        if State.AutoAttack and getHum() and getHum().Health > 0 then
+            click()
+        end
+        task.wait(0.22 + math.random() * 0.16)
+    end
+end
+
+-- ============================================================
+-- FARM LOOP (fly-hover mode or walk mode)
+-- ============================================================
+local function farmRun(isAlive)
+    while isAlive() do
+        if State.AutoFarm and getHum() and getHum().Health > 0 then
+            if State.FlyFarm then
+                if not FlyFarm.bv then flyStart() end
+                flyTick()
+            else
+                if FlyFarm.bv then flyStop() end
+                local r = getRoot()
+                if r then
+                    local target = getNearest(300)
+                    if target then
+                        local dist = (target.root.Position - r.Position).Magnitude
+                        if dist > 7.5 then
+                            walkTo(target.root.Position)
+                        else
+                            getHum():MoveTo(r.Position)
+                            local flat = Vector3.new(target.root.Position.X, r.Position.Y, target.root.Position.Z)
+                            if (flat - r.Position).Magnitude > 0.1 then
+                                r.CFrame = CFrame.new(r.Position, flat)
+                            end
+                        end
+                    else
+                        getHum():MoveTo(r.Position)
+                    end
+                    if detectStuck() then
+                        walkTo(r.Position + Vector3.new(math.random(-8,8), 0, math.random(-8,8)))
+                        task.wait(0.4)
+                    end
+                end
+            end
+        else
+            if FlyFarm.bv then flyStop() end
+        end
+        task.wait(0.15)
+    end
+    flyStop()
+end
+
+-- ============================================================
+-- AURA
+-- ============================================================
+local function auraRun(isAlive)
+    while isAlive() do
+        if State.KillAura and getHum() and getHum().Health > 0 then
+            local r = getRoot()
+            if r then
+                for _, e in ipairs(getEnemies()) do
+                    if (e.root.Position - r.Position).Magnitude < 22 then
+                        click()
+                    end
+                end
+            end
+        end
+        task.wait(0.22 + math.random() * 0.1)
+    end
+end
+
+-- ============================================================
+-- DODGE
+-- ============================================================
+local function dodgeRun(isAlive)
+    local last = 0
+    while isAlive() do
+        if State.AutoDodge and getHum() and getHum().Health > 0 then
+            local now = tick()
+            if now - last > 0.35 then
+                local r, h = getRoot(), getHum()
+                if r and h then
+                    if h.Health < h.MaxHealth * 0.42 then
+                        local away = (r.Position - Camera.CFrame.Position).Unit * 20
+                        walkTo(r.Position + Vector3.new(away.X, 0, away.Z))
+                        last = now
+                    else
+                        for _, p in ipairs(getIncoming(40)) do
+                            local toMe = (r.Position - p.part.Position).Unit
+                            if toMe:Dot(p.vel.Unit) > 0.65 then
+                                local side = Vector3.new(-p.vel.Unit.Z, 0, p.vel.Unit.X)
+                                if math.random() < 0.5 then side = -side end
+                                walkTo(r.Position + side * 22)
+                                last = now
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        task.wait(0.1)
+    end
+end
+
+-- ============================================================
+-- ANTI-AFK
+-- ============================================================
+local function afkRun(isAlive)
+    while isAlive() do
+        if State.AntiAFK then
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vec2New())
+            end)
+        end
+        task.wait(90 + math.random() * 90)
+    end
+end
+
+-- ============================================================
+-- INVENTORY
+-- ============================================================
+local function findButton(patterns)
+    for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
+        if (g:IsA("TextButton") or g:IsA("ImageButton")) and g.Visible and g.Active then
+            local n = g.Name:lower()
+            local lbl = g:FindFirstChildOfClass("TextLabel")
+            local txt = lbl and lbl.Text:lower() or ""
+            for _, pat in ipairs(patterns) do
+                if n:find(pat) or txt:find(pat) then return g end
+            end
+        end
+    end
+    return nil
+end
+
+local function inventoryRun(isAlive)
+    while isAlive() do
+        if State.AutoEquip then
+            local inv = LP:FindFirstChild("Inventory") or LP:FindFirstChild("Backpack")
+            if inv then
+                local best, bestS = nil, 0
+                for _, i in ipairs(inv:GetChildren()) do
+                    if i:IsA("Tool") then
+                        local s = 0
+                        for _, a in ipairs({"Damage","Power","Level","Score","Rarity"}) do
+                            local v = i:GetAttribute(a)
+                            if type(v) == "number" and v > s then s = v end
+                        end
+                        if s == 0 then s = #i.Name end
+                        if s > bestS then bestS = s; best = i end
+                    end
+                end
+                if best and best.Parent ~= LP.Character then
+                    pcall(function() best.Parent = LP.Character end)
+                end
+            end
+        end
+        if State.AutoSell then
+            local b = findButton({"sell all","sellall","dispose all","quick sell"})
+            if b then pcall(function() b:Activate() end) end
+        end
+        task.wait(2 + math.random())
+    end
+end
+
+local function dungeonRun(isAlive)
+    while isAlive() do
+        if State.AutoStart then
+            local b = findButton({"start","begin","enter","play"})
+            if b then pcall(function() b:Activate() end) end
+        end
+        if State.AutoReplay then
+            local b = findButton({"replay","again","restart","retry","next"})
+            if b then pcall(function() b:Activate() end) end
+        end
+        if State.AutoBackLobby then
+            local b = findButton({"lobby","hub","town","back","exit"})
+            if b then pcall(function() b:Activate() end) end
+        end
+        task.wait(1.5 + math.random())
+    end
+end
+
+-- ============================================================
+-- MOVEMENT
+-- ============================================================
+local flyHover = nil
+local function enableFlyHover()
+    local r = getRoot()
+    if not r then return end
+    local bv = INew("BodyVelocity", r)
+    bv.MaxForce = Vector3.new(1e5,1e5,1e5); bv.Velocity = Vector3.zero
+    local bg = INew("BodyGyro", r)
+    bg.MaxTorque = Vector3.new(1e5,1e5,1e5); bg.P = 1e4
+    local conn = RunService.RenderStepped:Connect(function()
+        if not State.Fly then return end
+        local cam = Camera.CFrame
+        local move = Vector3.zero
+        local gp = UserInputService:GetGamepadState(Enum.UserInputType.Gamepad1)
+        if gp then
+            for _, i in ipairs(gp) do
+                if i.KeyCode == Enum.KeyCode.Thumbstick1 then
+                    move = move + cam.LookVector * i.Position.Z * 60
+                    move = move + cam.RightVector * i.Position.X * 60
+                end
+            end
+        end
+        bv.Velocity = move
+        bg.CFrame = cam
+    end)
+    flyHover = function()
+        pcall(function() conn:Disconnect() end)
+        pcall(function() bv:Destroy() end)
+        pcall(function() bg:Destroy() end)
+    end
+end
+local function disableFlyHover()
+    if flyHover then flyHover(); flyHover = nil end
+end
+
+-- ============================================================
+-- ESP
+-- ============================================================
+local espCache = {}
+local function espRun(isAlive)
+    while isAlive() do
+        if State.ESP then
+            for _, e in ipairs(getEnemies()) do
+                local c = espCache[e.model]
+                if not c or not c.bb or not c.bb.Parent then
+                    local bb = INew("BillboardGui", e.model)
+                    bb.Size = UDim2New(0, 110, 0, 32)
+                    bb.StudsOffset = Vector3.new(0, 3.2, 0)
+                    bb.AlwaysOnTop = true
+                    local lbl = INew("TextLabel", bb)
+                    lbl.Size = UDim2New(1, 0, 1, 0)
+                    lbl.BackgroundTransparency = 1
+                    lbl.TextColor3 = FromRGB(255, 90, 90)
+                    lbl.TextSize = 11
+                    lbl.Font = Enum.Font.GothamBold
+                    lbl.TextStrokeTransparency = 0
+                    local hl = INew("Highlight", e.model)
+                    hl.FillColor = FromRGB(255, 60, 60)
+                    hl.OutlineColor = FromRGB(255, 255, 255)
+                    hl.FillTransparency = 0.72
+                    espCache[e.model] = {bb=bb, hl=hl, lbl=lbl}
+                else
+                    c.lbl.Text = string.format("%s [%d]", e.model.Name, math.floor(e.humanoid.Health))
+                end
+            end
+        end
+        task.wait(0.25)
+    end
+end
+local function espClear()
+    for _, d in pairs(espCache) do
+        pcall(function() d.bb:Destroy() end)
+        pcall(function() d.hl:Destroy() end)
+    end
+    espCache = {}
+end
+
+-- ============================================================
+-- GOD MODE
+-- ============================================================
+local function godRun(isAlive)
+    while isAlive() do
+        if State.GodMode then
+            local h = getHum()
+            if h then h.MaxHealth = math.huge; h.Health = math.huge end
+        end
+        task.wait(0.5)
+    end
+end
+
+-- ============================================================
+-- UI
+-- ============================================================
+if CoreGui:FindFirstChild("DQR_VANTA") then CoreGui.DQR_VANTA:Destroy() end
+
+local Pad = IsMobile and 16 or 14
+local PanelW = IsMobile and 340 or 400
+local PanelH = IsMobile and 500 or 540
+
+local ScreenGui = Create("ScreenGui", {
+    Parent = CoreGui,
+    Name = "DQR_VANTA",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    DisplayOrder = 999,
+    ZIndexBehavior = Enum.ZIndexBehavior.Global,
+})
+
+local UIScale = Create("UIScale", {Parent = ScreenGui, Scale = 1})
+
+local Main = Create("CanvasGroup", {
+    Parent = ScreenGui,
+    AnchorPoint = Vec2New(0.5, 0.5),
+    Position = UDim2New(0.5, 0, 0.5, 20),
+    Size = UDim2New(0, PanelW, 0, PanelH),
+    BackgroundColor3 = Theme.Background,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+    GroupTransparency = 1,
+    ZIndex = 2,
+})
+Corner(Main, 12)
+Stroke(Main, Theme.Border, 0.9)
+
+local DragArea = Create("Frame", {
+    Parent = Main,
+    Size = UDim2New(1, 0, 0, 52),
+    BackgroundTransparency = 1,
+    ZIndex = 3,
+})
+
+local CloseBtn = Create("TextButton", {
+    Parent = Main,
+    Size = UDim2New(0, 24, 0, 24),
+    Position = UDim2New(0, Pad, 0, Pad),
+    BackgroundTransparency = 1,
+    FontFace = FontFace,
+    Text = "×",
+    TextColor3 = Theme.Text,
+    TextSize = 18,
+    AutoButtonColor = false,
+    ZIndex = 6,
+})
+Corner(CloseBtn, 6)
+
+local BrandRow = Create("Frame", {
+    Parent = Main,
+    Size = UDim2New(0, 0, 0, 18),
+    Position = UDim2New(0, Pad + 30, 0, Pad),
+    AutomaticSize = Enum.AutomaticSize.X,
+    BackgroundTransparency = 1,
+    ZIndex = 5,
+})
+Create("UIListLayout", {
+    Parent = BrandRow,
+    FillDirection = Enum.FillDirection.Horizontal,
+    VerticalAlignment = Enum.VerticalAlignment.Center,
+    SortOrder = Enum.SortOrder.LayoutOrder,
+})
+local function BrandPart(Text, Color, Order)
+    return Create("TextLabel", {
+        Parent = BrandRow,
+        Size = UDim2New(0, 0, 1, 0),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundTransparency = 1,
+        FontFace = FontFace,
+        Text = Text,
+        TextColor3 = Color,
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        LayoutOrder = Order,
+        ZIndex = 5,
+    })
+end
+BrandPart("dungeon", Theme.Accent, 1)
+BrandPart("quest", Theme.Text, 2)
+BrandPart(" reborn", Theme.Muted, 3)
+
+local Subtitle = Create("TextLabel", {
+    Parent = Main,
+    Size = UDim2New(1, -Pad*2, 0, 16),
+    Position = UDim2New(0, Pad, 0, Pad + 24),
+    BackgroundTransparency = 1,
+    FontFace = FontFace,
+    Text = "vanta build · no keysystem · mobile ready",
+    TextColor3 = Theme.Muted,
+    TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 4,
+})
+
+local Scroll = Create("ScrollingFrame", {
+    Parent = Main,
+    Size = UDim2New(1, -Pad*2, 1, -(Pad + 60 + 40)),
+    Position = UDim2New(0, Pad, 0, Pad + 56),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = FromRGB(70, 72, 88),
+    CanvasSize = UDim2New(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ZIndex = 4,
+})
+Create("UIListLayout", {Parent = Scroll, Padding = UDimNew(0, 6), SortOrder = Enum.SortOrder.LayoutOrder})
+
+local Toggles = {}
+local function section(text)
+    local s = Create("TextLabel", {
+        Parent = Scroll,
+        Size = UDim2New(1, 0, 0, 24),
+        BackgroundTransparency = 1,
+        FontFace = FontFace,
+        Text = "· " .. text:upper() .. " ·",
+        TextColor3 = Theme.Muted,
+        TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    })
+end
+
+local function toggle(label, default, cb)
+    local Btn = Create("TextButton", {
+        Parent = Scroll,
+        Size = UDim2New(1, 0, 0, 40),
+        BackgroundColor3 = Theme.Element,
+        Text = "",
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ZIndex = 4,
+    })
+    Corner(Btn, 9)
+    Stroke(Btn, Theme.Border, 0.92)
+    local Lbl = Create("TextLabel", {
+        Parent = Btn,
+        Size = UDim2New(1, -72, 1, 0),
+        Position = UDim2New(0, 14, 0, 0),
+        BackgroundTransparency = 1,
+        FontFace = FontFace,
+        Text = label,
+        TextColor3 = Theme.Text,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    local Track = Create("Frame", {
+        Parent = Btn,
+        Size = UDim2New(0, 42, 0, 22),
+        Position = UDim2New(1, -54, 0.5, -11),
+        BackgroundColor3 = default and Theme.Success or FromRGB(40,42,52),
+        BorderSizePixel = 0,
+    })
+    Corner(Track, 11)
+    local Dot = Create("Frame", {
+        Parent = Track,
+        Size = UDim2New(0, 16, 0, 16),
+        Position = default and UDim2New(1, -18, 0.5, -8) or UDim2New(0, 2, 0.5, -8),
+        BackgroundColor3 = FromRGB(228,230,240),
+        BorderSizePixel = 0,
+    })
+    Corner(Dot, 8)
+    local st = default or false
+    local function set(v)
+        st = v
+        Tween(Track, nil, {BackgroundColor3 = st and Theme.Success or FromRGB(40,42,52)})
+        Tween(Dot, nil, {Position = st and UDim2New(1,-18,0.5,-8) or UDim2New(0,2,0.5,-8)})
+        if cb then cb(st) end
+    end
+    Btn.MouseButton1Click:Connect(function() set(not st) end)
+    Btn.MouseEnter:Connect(function() Tween(Btn, nil, {BackgroundColor3 = Theme.Hover}) end)
+    Btn.MouseLeave:Connect(function() Tween(Btn, nil, {BackgroundColor3 = Theme.Element}) end)
+    Toggles[label] = {set=set, get=function() return st end}
+end
+
+local function button(label, cb)
+    local Btn = Create("TextButton", {
+        Parent = Scroll,
+        Size = UDim2New(1, 0, 0, 36),
+        BackgroundColor3 = Theme.Ghost,
+        FontFace = FontFace,
+        Text = label,
+        TextColor3 = Theme.Text,
+        TextSize = 12,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ZIndex = 4,
+    })
+    Corner(Btn, 9)
+    Stroke(Btn, Theme.Border, 0.92)
+    Btn.MouseEnter:Connect(function() Tween(Btn, nil, {BackgroundColor3 = Theme.Hover}) end)
+    Btn.MouseLeave:Connect(function() Tween(Btn, nil, {BackgroundColor3 = Theme.Ghost}) end)
+    Btn.MouseButton1Click:Connect(cb)
+end
+
+-- drag
+do
+    local dragging, dragStart, startPos
+    DragArea.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        dragging = true; dragStart = input.Position; startPos = Main.Position
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local delta = (input.Position - dragStart) / (UIScale.Scale or 1)
+        Main.Position = UDim2
