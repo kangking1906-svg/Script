@@ -1,8 +1,3 @@
--- Roblox Studio / LocalScript
--- For a game you own or are explicitly authorized to test.
--- This provides the UI/state architecture for the requested features.
--- Connect each toggle to your own server-side game systems.
-
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 
