@@ -41,7 +41,6 @@ if type(isfolder) == "function" and type(makefolder) == "function" then
 end
 
 local ProjectId = "22cad4542e792a9c"
-local SdkUrl = "https://api.polsec.sh/sdk"
 local LoaderBase = "https://api.polsec.sh/loader"
 
 local function StealAnEggBypass()
@@ -64,11 +63,7 @@ local function StealAnEggBypass()
 end
 
 local Config = {
-	File = "sportsclub/license_key.json",
 	Settings = "sportsclub/loader_settings.json",
-	KeyLink = "https://polsec.sh/ad/5f0b619a6d027235",
-	Shop = "https://sportsclub.fun/#store",
-	Discord = "https://discord.gg/gUbZegrB6g",
 	Sniper = 7264587281,
 	Bypasses = {
 		[7264587281] = "https://pastebin.com/raw/9GqpPtwk",
@@ -106,6 +101,150 @@ local GameList = {
 	[7585140258] = "db37f21dad9c7ac1",
 	[7633926880] = "981acf63e98b3571",
 	[7883776681] = "ecfb28ceae344a4e",
+	[7884563721] = "137bb216d0fdab55",
+	[8307114974] = "32a3f9f1781977ef",
+	[8795154789] = "931dcf7ba70b7dc5",
+	[9112256336] = "34a15184cb6a7ee4",
+	[9167377564] = "82f7f927a73f1de1",
+	[9294074907] = "31655f9162e3aa8f",
+	[9534705677] = "e2fabbf7654aed38",
+	[9561553764] = "e823cdbf57675025",
+	[9641502068] = "d65fbd7db286df7d",
+	[9908641400] = "e648818e624401de",
+	[9931749389] = "858f757ed4641d2b",
+	[10031562156] = "e930337182b904f9",
+	[10057403337] = "b92fa39292be5ddc",
+	[10144280947] = "31696135af052840",
+	[10155360168] = "f135c2d3a0febabf",
+	[10230942274] = "dc478626c0c0f9de",
+	[10476380360] = "67b2e03a3469e076",
+	[10539411000] = "308fe2805126001d",
+	[10563114921] = "ebcff09f785a4a30",
+	[10648640958] = "24b4a31160224f3c",
+}
+
+local ScriptId = GameList[game.GameId]
+
+if type(ScriptId) ~= "string" or ScriptId == "" then
+	StarterGui:SetCore("SendNotification", {
+		Title = "sportsclub",
+		Text = "This game is not supported.",
+	})
+	return
+end
+
+local function ReadJson(Path)
+	if not isfile or not readfile or not isfile(Path) then
+		return nil
+	end
+	local Ok, Raw = pcall(readfile, Path)
+	if not Ok or type(Raw) ~= "string" or Raw == "" then
+		return nil
+	end
+	local Decoded, Data = pcall(HttpService.JSONDecode, HttpService, Raw)
+	if not Decoded or type(Data) ~= "table" then
+		return nil
+	end
+	return Data
+end
+
+local function LoadSettings()
+	local Data = ReadJson(Config.Settings)
+	if not Data then
+		return {
+			discord_join_disabled = false,
+		}
+	end
+	return {
+		discord_join_disabled = Data.discord_join_disabled == true,
+	}
+end
+
+local function InstallDiscordGuard()
+	if getgenv().sportsclub_discord_join_guard_installed == true then
+		return
+	end
+	getgenv().sportsclub_discord_join_guard_installed = true
+	getgenv().sportsclub_discord_join_disabled = true
+	if type(hookfunction) ~= "function" then
+		return
+	end
+
+	local function Hook(Target)
+		if type(Target) ~= "function" then
+			return
+		end
+		local Original
+		local Ok, Result = pcall(hookfunction, Target, function(Opts)
+			local Url = type(Opts) == "table" and (Opts.Url or Opts.url)
+			local Body = type(Opts) == "table" and (Opts.Body or Opts.body)
+			if type(Url) == "string" and string.find(Url, "127.0.0.1:6463", 1, true) and type(Body) == "string" and string.find(Body, "INVITE_BROWSER", 1, true) then
+				return { StatusCode = 200, Body = "{}" }
+			end
+			return Original(Opts)
+		end)
+		if Ok and type(Result) == "function" then
+			Original = Result
+		end
+	end
+
+	Hook(request)
+	if type(syn) == "table" then
+		Hook(syn.request)
+	end
+	Hook(http_request)
+	if type(http) == "table" then
+		Hook(http.request)
+	end
+end
+
+if LoadSettings().discord_join_disabled then
+	InstallDiscordGuard()
+end
+
+local function EnsureSniper()
+	if game.GameId ~= Config.Sniper then
+		return
+	end
+	local Link = Config.Bypasses[game.GameId]
+	if type(Link) ~= "string" then
+		return
+	end
+	local Existing = getgenv().sportsclub_sniper_duels_ac_bypass
+	if getgenv().sportsclub_sniper_duels_ac_bypassed and type(Existing) == "table" and Existing.ready == true then
+		return
+	end
+	pcall(function()
+		loadstring(game:HttpGet(Link))()
+	end)
+	local Started = os.clock()
+	while os.clock() - Started < 15 do
+		local Api = getgenv().sportsclub_sniper_duels_ac_bypass
+		if type(Api) == "table" and Api.ready == true then
+			return
+		end
+		local Moderation = game:FindFirstChild("ModerationService")
+		if Moderation and (Moderation:GetAttribute("SD_SOFT_READY") == true or Moderation:GetAttribute("SD_FULL_READY") == true) then
+			return
+		end
+		task.wait(0.1)
+	end
+end
+
+local function LoadGame()
+	local Bypass = Config.Bypasses[game.GameId]
+	if game.GameId ~= Config.Sniper then
+		if type(Bypass) == "string" then
+			loadstring(game:HttpGet(Bypass))()
+		elseif type(Bypass) == "function" then
+			Bypass()
+		end
+	end
+	loadstring(game:HttpGet(LoaderBase .. "/" .. ProjectId .. "/" .. ScriptId))()
+end
+
+EnsureSniper()
+LoadGame()	[7883776681] = "ecfb28ceae344a4e",
 	[7884563721] = "137bb216d0fdab55",
 	[8307114974] = "32a3f9f1781977ef",
 	[8795154789] = "931dcf7ba70b7dc5",
