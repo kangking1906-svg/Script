@@ -845,4 +845,135 @@ do
         if not dragging then return end
         if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
         local delta = (input.Position - dragStart) / (UIScale.Scale or 1)
-        Main.Position = UDim2
+        Main.Position = UDim2New(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
+
+CloseBtn.MouseButton1Click:Connect(function()
+    local here = Main.Position
+    Tween(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+        GroupTransparency = 1,
+        Position = UDim2New(here.X.Scale, here.X.Offset, here.Y.Scale, here.Y.Offset + 12),
+    })
+    task.wait(0.22)
+    ScreenGui:Destroy()
+end)
+
+-- ============================================================
+-- WIRING
+-- ============================================================
+section("Combat")
+toggle("Auto Farm", false, function(v)
+    State.AutoFarm = v
+    if v then
+        Scheduler.run("Farm", farmRun)
+    else
+        Scheduler.stop("Farm")
+    end
+end)
+toggle("Fly Farm (hover above)", false, function(v) State.FlyFarm = v end)
+toggle("Auto Attack", false, function(v)
+    State.AutoAttack = v
+    if v then Scheduler.run("Attack", attackRun) else Scheduler.stop("Attack") end
+end)
+toggle("Auto Skill", false, function(v)
+    State.AutoSkill = v
+    if v then Scheduler.run("Skill", skillRun) else Scheduler.stop("Skill") end
+end)
+toggle("Kill Aura", false, function(v)
+    State.KillAura = v
+    if v then Scheduler.run("Aura", auraRun) else Scheduler.stop("Aura") end
+end)
+toggle("Auto Dodge", false, function(v)
+    State.AutoDodge = v
+    if v then Scheduler.run("Dodge", dodgeRun) else Scheduler.stop("Dodge") end
+end)
+
+section("Dungeon")
+toggle("Auto Start", false, function(v) State.AutoStart = v end)
+toggle("Auto Replay", false, function(v) State.AutoReplay = v end)
+toggle("Auto Back Lobby", false, function(v) State.AutoBackLobby = v end)
+
+section("Inventory")
+toggle("Auto Equip Best", false, function(v) State.AutoEquip = v end)
+toggle("Auto Sell", false, function(v) State.AutoSell = v end)
+
+section("Movement")
+toggle("Anti-AFK", false, function(v)
+    State.AntiAFK = v
+    if v then Scheduler.run("AFK", afkRun) else Scheduler.stop("AFK") end
+end)
+toggle("WalkSpeed 120", false, function(v)
+    State.WalkSpeed = v
+    local h = getHum()
+    if h then h.WalkSpeed = v and 120 or 16 end
+end)
+toggle("Fly (gamepad)", false, function(v)
+    State.Fly = v
+    if v then enableFlyHover() else disableFlyHover() end
+end)
+toggle("NoClip", false, function(v)
+    State.NoClip = v
+    if v then
+        RunService.Stepped:Connect(function()
+            if not State.NoClip then return end
+            local c = LP.Character
+            if c then for _, p in ipairs(c:GetDescendants()) do
+                if p:IsA("BasePart") then p.CanCollide = false end
+            end end
+        end)
+    end
+end)
+toggle("Infinite Jump", false, function(v)
+    State.InfiniteJump = v
+    if v then
+        UserInputService.JumpRequest:Connect(function()
+            if not State.InfiniteJump then return end
+            local h = getHum()
+            if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+        end)
+    end
+end)
+
+section("Visual")
+toggle("ESP", false, function(v)
+    State.ESP = v
+    if v then Scheduler.run("ESP", espRun) else Scheduler.stop("ESP"); espClear() end
+end)
+toggle("God Mode", false, function(v)
+    State.GodMode = v
+    if v then Scheduler.run("God", godRun) else Scheduler.stop("God") end
+end)
+
+section("Actions")
+button("Teleport to Nearest", function()
+    local t = getNearest(9999)
+    local r = getRoot()
+    if t and r then r.CFrame = t.root.CFrame + Vector3.new(0, 3, 0) end
+end)
+button("Clear All", function()
+    Scheduler.stop("Farm"); Scheduler.stop("Attack"); Scheduler.stop("Skill")
+    Scheduler.stop("Aura"); Scheduler.stop("Dodge"); Scheduler.stop("AFK")
+    Scheduler.stop("ESP");  Scheduler.stop("God")
+    for _, t in pairs(Toggles) do t.set(false) end
+    flyStop(); disableFlyHover(); espClear()
+    local h = getHum()
+    if h then h.WalkSpeed = 16 end
+end)
+
+-- inventory/dungeon always-on scanners (run once, check state internally)
+Scheduler.run("Inventory", inventoryRun)
+Scheduler.run("Dungeon", dungeonRun)
+
+-- open animation
+Tween(Main, TweenInfo.new(0.48, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+    GroupTransparency = 0,
+    Position = UDim2New(0.5, 0, 0.5, 0),
+})
+
+return true
