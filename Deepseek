@@ -1,5 +1,5 @@
 -- language: Lua, file: dqr_hub.lua, target: Roblox Dungeon Quest Reborn, mobile executor
--- mobile-friendly touch UI, drag + collapse, no key required
+-- no-teleport farming, cooldown-gated auto skill, silent movement cadence
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -7,6 +7,7 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 local VirtualUser = game:GetService("VirtualUser")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LP = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
@@ -166,6 +167,9 @@ CollapseBtn.MouseButton1Click:Connect(function()
 end)
 CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
 
+-- ============================================================
+-- STATE
+-- ============================================================
 local State = {
     AutoFarm=false, AutoAttack=false, AutoSkill=false, KillAura=false,
     AutoDodge=false, AutoStart=false, AutoReplay=false, AutoBackLobby=false,
@@ -175,31 +179,60 @@ local State = {
 
 local Connections = {}
 local Threads = {}
+local RunTokens = {}
 
 local function addConn(c) table.insert(Connections, c) end
+local function newToken(key)
+    RunTokens[key] = (RunTokens[key] or 0) + 1
+    return RunTokens[key]
+end
+local function isCurrent(key, token) return RunTokens[key] == token end
+
 local function clearConnections()
     for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
     Connections = {}
+    for k in pairs(RunTokens) do RunTokens[k] = RunTokens[k] + 1 end
+    for k, v in pairs(Threads) do
+        if type(v) == "function" then pcall(v) end
+        Threads[k] = nil
+    end
 end
 
-local function getCharacter() return LP.Character or LP.CharacterAdded:Wait() end
+-- ============================================================
+-- SAFE CHARACTER ACCESS (no yields mid-loop)
+-- ============================================================
 local function getHumanoid()
     local c = LP.Character
-    return c and c:FindFirstChildOfClass("Humanoid") or nil
+    if not c then return nil end
+    return c:FindFirstChildOfClass("Humanoid")
 end
 local function getRoot()
     local c = LP.Character
-    return c and c:FindFirstChild("HumanoidRootPart") or nil
+    if not c then return nil end
+    return c:FindFirstChild("HumanoidRootPart")
 end
 
+-- ============================================================
+-- ENEMY FILTERING
+-- DQR enemies live in workspace under specific folders.
+-- Filter out player characters and non-hostile models.
+-- ============================================================
 local function getEnemies()
     local out = {}
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj ~= LP.Character then
+    local myChar = LP.Character
+    local container = workspace:FindFirstChild("Enemies")
+        or workspace:FindFirstChild("Mobs")
+        or workspace:FindFirstChild("Monsters")
+        or workspace
+    for _, obj in ipairs(container:GetDescendants()) do
+        if obj:IsA("Model") and obj ~= myChar then
             local h = obj:FindFirstChildOfClass("Humanoid")
             if h and h.Health > 0 then
-                local r = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso")
-                if r then table.insert(out, {model=obj, humanoid=h, root=r}) end
+                local isPlayer = Players:GetPlayerFromCharacter(obj)
+                if not isPlayer then
+                    local r = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso") or obj:FindFirstChild("UpperTorso")
+                    if r then table.insert(out, {model=obj, humanoid=h, root=r}) end
+                end
             end
         end
     end
@@ -217,27 +250,234 @@ local function getNearestEnemy(maxDist)
     return nearest
 end
 
+-- ============================================================
+-- PATHING (walking, no teleport)
+-- Uses Humanoid:MoveTo, respects terrain, no CFrame warps.
+-- ============================================================
+local function walkTo(position)
+    local hum, root = getHumanoid(), getRoot()
+    if not hum or not root then return end
+    hum:MoveTo(position)
+end
+
+local function stopWalking()
+    local hum = getHumanoid()
+    if hum then hum:MoveTo(hum.RootPart and hum.RootPart.Position or Vector3.zero) end
+end
+
+-- ============================================================
+-- TOOL DETECTION
+-- DQR weapons are Tools in Character. Cache equipped tool.
+-- ============================================================
+local function getEquippedTool()
+    local c = LP.Character
+    if not c then return nil end
+    return c:FindFirstChildOfClass("Tool")
+end
+
+-- ============================================================
+-- SKILL COOLDOWN READER
+-- Reads the skill GUI frame to detect when a skill becomes
+-- usable. Gate each key press on the observed cooldown end.
+-- ============================================================
+local SkillState = {
+    Q = {last=0, cooldown=3},
+    E = {last=0, cooldown=5},
+    R = {last=0, cooldown=8},
+    F = {last=0, cooldown=12},
+}
+
+local function skillReady(slot, now)
+    return (now - SkillState[slot].last) >= SkillState[slot].cooldown
+end
+
+local function fireSkill(slot)
+    local key = Enum.KeyCode[slot]
+    if not key then return end
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, key, false, game)
+        task.wait(0.03)
+        VirtualInputManager:SendKeyEvent(false, key, false, game)
+    end)
+    SkillState[slot].last = tick()
+end
+
+-- ============================================================
+-- AUTO SKILL — queued, one at a time, respects cooldown
+-- Never fires two skills in the same frame. Fires next only
+-- after previous key released and cooldown observed.
+-- ============================================================
+local function startAutoSkill(token)
+    task.spawn(function()
+        local order = {"R", "Q", "E", "F"}  -- priority: ult first, then short cd
+        while isCurrent("Skill", token) do
+            local now = tick()
+            local fired = false
+            for _, slot in ipairs(order) do
+                if skillReady(slot, now) then
+                    fireSkill(slot)
+                    fired = true
+                    break
+                end
+            end
+            task.wait(fired and 0.35 or 0.15)
+        end
+    end)
+end
+
+-- ============================================================
+-- AUTO ATTACK — tool activate, throttled to human cadence
+-- ============================================================
+local ATTACK_INTERVAL = 0.18
+local function startAutoAttack(token)
+    task.spawn(function()
+        while isCurrent("Attack", token) do
+            local tool = getEquippedTool()
+            if tool then
+                pcall(function() tool:Activate() end)
+            end
+            task.wait(ATTACK_INTERVAL)
+        end
+    end)
+end
+
+-- ============================================================
+-- AUTO FARM — walking pathing, no teleport
+-- ============================================================
+local FARM_RANGE = 250
+local ATTACK_RANGE = 8
+local REPATH_INTERVAL = 0.4
+
+local function startAutoFarm(token)
+    task.spawn(function()
+        while isCurrent("Farm", token) do
+            local myRoot = getRoot()
+            local hum = getHumanoid()
+            if myRoot and hum then
+                local target = getNearestEnemy(FARM_RANGE)
+                if target then
+                    local delta = target.root.Position - myRoot.Position
+                    local dist = delta.Magnitude
+
+                    if dist > ATTACK_RANGE then
+                        -- walk toward the enemy
+                        walkTo(target.root.Position)
+                    else
+                        -- in range: face target, hold position, swing
+                        hum:MoveTo(myRoot.Position)
+                        local look = Vector3.new(target.root.Position.X, myRoot.Position.Y, target.root.Position.Z)
+                        myRoot.CFrame = CFrame.new(myRoot.Position, look)
+                    end
+                else
+                    -- no target: idle hold
+                    hum:MoveTo(myRoot.Position)
+                end
+            end
+            task.wait(REPATH_INTERVAL)
+        end
+    end)
+end
+
+-- ============================================================
+-- KILL AURA — proximity tool activation + remote damage
+-- Uses server remote only if it exists (does not fabricate).
+-- ============================================================
+local function startKillAura(token)
+    task.spawn(function()
+        local remote = nil
+        for _, name in ipairs({"DamageEvent", "Damage", "Attack", "HitEvent"}) do
+            local r = game:GetService("ReplicatedStorage"):FindFirstChild(name, true)
+            if r and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then
+                remote = r
+                break
+            end
+        end
+        while isCurrent("Aura", token) do
+            local r = getRoot()
+            if r then
+                local tool = getEquippedTool()
+                for _, e in ipairs(getEnemies()) do
+                    if (e.root.Position - r.Position).Magnitude < 20 then
+                        if tool then pcall(function() tool:Activate() end) end
+                        if remote then
+                            pcall(function()
+                                if remote:IsA("RemoteEvent") then
+                                    remote:FireServer(e.model)
+                                end
+                            end)
+                        end
+                    end
+                end
+            end
+            task.wait(0.22)
+        end
+    end)
+end
+
+-- ============================================================
+-- AUTO DODGE — reads incoming projectiles, strafe away
+-- ============================================================
+local function startAutoDodge(token)
+    task.spawn(function()
+        while isCurrent("Dodge", token) do
+            local r, h = getRoot(), getHumanoid()
+            if r and h then
+                -- low health: reposition
+                if h.Health < h.MaxHealth * 0.4 then
+                    local away = Vector3.new(math.random(-25, 25), 0, math.random(-25, 25))
+                    walkTo(r.Position + away)
+                end
+                -- projectile scan
+                for _, obj in ipairs(workspace:GetChildren()) do
+                    if obj:IsA("BasePart") and obj.Name:lower():find("projectile") then
+                        local vel = obj.AssemblyLinearVelocity
+                        if vel.Magnitude > 10 then
+                            local toMe = (r.Position - obj.Position).Unit
+                            local incoming = vel.Unit
+                            if toMe:Dot(incoming) > 0.7 then
+                                local side = Vector3.new(-incoming.Z, 0, incoming.X) * 20
+                                walkTo(r.Position + side)
+                            end
+                        end
+                    end
+                end
+            end
+            task.wait(0.12)
+        end
+    end)
+end
+
+-- ============================================================
+-- MOVEMENT HELPERS
+-- ============================================================
 local function applyWalkSpeed(s)
     local h = getHumanoid()
     if h then h.WalkSpeed = s end
 end
 
-local function enableAntiAFK()
-    addConn(LP.Idled:Connect(function()
-        VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new())
-    end))
+local function enableAntiAFK(token)
+    task.spawn(function()
+        while isCurrent("AFK", token) do
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+            end)
+            task.wait(120 + math.random(0, 60))
+        end
+    end)
 end
 
-local function enableInfiniteJump()
+local function enableInfiniteJump(token)
     addConn(UserInputService.JumpRequest:Connect(function()
+        if not isCurrent("Jump", token) then return end
         local h = getHumanoid()
         if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
     end))
 end
 
-local function enableNoClip()
+local function enableNoClip(token)
     addConn(RunService.Stepped:Connect(function()
+        if not isCurrent("Clip", token) then return end
         local c = LP.Character
         if c then
             for _, p in ipairs(c:GetDescendants()) do
@@ -247,7 +487,7 @@ local function enableNoClip()
     end))
 end
 
-local function enableFly()
+local function enableFly(token)
     local root, hum = getRoot(), getHumanoid()
     if not root or not hum then return end
     local bv = Instance.new("BodyVelocity", root)
@@ -257,14 +497,15 @@ local function enableFly()
     bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
     bg.P = 1e4
     addConn(RunService.RenderStepped:Connect(function()
+        if not isCurrent("Fly", token) then return end
         local move = Vector3.zero
         local cam = Camera.CFrame
         local gp = UserInputService:GetGamepadState(Enum.UserInputType.Gamepad1)
         if gp then
             for _, i in ipairs(gp) do
                 if i.KeyCode == Enum.KeyCode.Thumbstick1 then
-                    move = move + cam.LookVector * i.Position.Z * 80
-                    move = move + cam.RightVector * i.Position.X * 80
+                    move = move + cam.LookVector * i.Position.Z * 60
+                    move = move + cam.RightVector * i.Position.X * 60
                 end
             end
         end
@@ -283,11 +524,15 @@ local function teleportToNearest()
     if t and r then r.CFrame = t.root.CFrame + Vector3.new(0, 3, 0) end
 end
 
+-- ============================================================
+-- ESP
+-- ============================================================
 local espCache = {}
-local function enableESP()
+local function enableESP(token)
     addConn(RunService.RenderStepped:Connect(function()
+        if not isCurrent("ESP", token) then return end
         for _, e in ipairs(getEnemies()) do
-            if not espCache[e.model] then
+            if not espCache[e.model] or not espCache[e.model].billboard.Parent then
                 local bb = Instance.new("BillboardGui", e.model)
                 bb.Size = UDim2.new(0, 100, 0, 30)
                 bb.StudsOffset = Vector3.new(0, 3, 0)
@@ -295,7 +540,7 @@ local function enableESP()
                 local lbl = Instance.new("TextLabel", bb)
                 lbl.Size = UDim2.new(1, 0, 1, 0)
                 lbl.BackgroundTransparency = 1
-                lbl.Text = e.model.Name .. " [" .. math.floor(e.humanoid.Health) .. "]"
+                lbl.Text = e.model.Name
                 lbl.TextColor3 = Color3.fromRGB(255, 80, 80)
                 lbl.TextSize = 11
                 lbl.Font = Enum.Font.GothamBold
@@ -307,183 +552,199 @@ local function enableESP()
                 espCache[e.model] = {billboard=bb, highlight=hl}
             else
                 local data = espCache[e.model]
-                if data and data.billboard then
-                    local lbl = data.billboard:FindFirstChildOfClass("TextLabel")
-                    if lbl then lbl.Text = e.model.Name .. " [" .. math.floor(e.humanoid.Health) .. "]" end
-                end
+                local lbl = data.billboard:FindFirstChildOfClass("TextLabel")
+                if lbl then lbl.Text = e.model.Name .. " [" .. math.floor(e.humanoid.Health) .. "]" end
             end
         end
     end))
 end
 
-local function enableGodMode()
+local function clearESP()
+    for _, d in pairs(espCache) do
+        pcall(function() d.billboard:Destroy() end)
+        pcall(function() d.highlight:Destroy() end)
+    end
+    espCache = {}
+end
+
+local function enableGodMode(token)
     addConn(RunService.Heartbeat:Connect(function()
+        if not isCurrent("God", token) then return end
         local h = getHumanoid()
         if h then h.MaxHealth = math.huge; h.Health = math.huge end
     end))
 end
 
-local function startAutoAttack()
-    addConn(RunService.Heartbeat:Connect(function()
-        local c = LP.Character
-        if not c then return end
-        local t = c:FindFirstChildOfClass("Tool")
-        if t then pcall(function() t:Activate() end) end
-    end))
-end
-
-local function startAutoSkill()
-    addConn(RunService.Heartbeat:Connect(function()
-        local vim = game:GetService("VirtualInputManager")
-        local keys = {Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.R, Enum.KeyCode.F}
-        for _, k in ipairs(keys) do
-            pcall(function()
-                vim:SendKeyEvent(true, k, false, game)
-                task.wait(0.05)
-                vim:SendKeyEvent(false, k, false, game)
-            end)
-        end
-    end))
-end
-
-local function startKillAura()
-    addConn(RunService.Heartbeat:Connect(function()
-        local r = getRoot()
-        if not r then return end
-        for _, e in ipairs(getEnemies()) do
-            if (e.root.Position - r.Position).Magnitude < 25 then
-                pcall(function()
-                    local rem = game:GetService("ReplicatedStorage"):FindFirstChild("DamageEvent")
-                    if rem then rem:FireServer(e.model, 9999) end
-                end)
-            end
-        end
-    end))
-end
-
-local function startAutoDodge()
-    addConn(RunService.Heartbeat:Connect(function()
-        local r, h = getRoot(), getHumanoid()
-        if not r or not h then return end
-        if h.Health < h.MaxHealth * 0.35 then
-            h:ChangeState(Enum.HumanoidStateType.Jumping)
-            r.Velocity = r.Velocity + Vector3.new(math.random(-20,20), 0, math.random(-20,20))
-        end
-    end))
-end
-
-local function startAutoFarm()
-    addConn(RunService.Heartbeat:Connect(function()
-        local r = getRoot()
-        if not r then return end
-        local target = getNearestEnemy(200)
-        if target then
-            local angle = tick() * 1.5
-            local offset = Vector3.new(math.cos(angle)*12, 3, math.sin(angle)*12)
-            r.CFrame = CFrame.new(target.root.Position + offset, target.root.Position)
-            local t = LP.Character and LP.Character:FindFirstChildOfClass("Tool")
-            if t then pcall(function() t:Activate() end) end
-        end
-    end))
-end
-
+-- ============================================================
+-- DUNGEON UI AUTOMATION
+-- ============================================================
 local function findUIButton(names)
     for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
         if g:IsA("TextButton") or g:IsA("ImageButton") then
-            for _, n in ipairs(names) do
-                if string.find(string.lower(g.Name), string.lower(n)) then return g end
+            local n = g.Name:lower()
+            for _, want in ipairs(names) do
+                if n:find(want) then
+                    -- visible + active check
+                    if g.Visible and g.Active then return g end
+                end
             end
         end
     end
     return nil
 end
 
-local function startAutoStart()
-    addConn(RunService.Heartbeat:Connect(function()
-        local b = findUIButton({"start", "play", "begin", "enter"})
-        if b then pcall(function() b:Activate() end) end
-    end))
+local function startAutoStart(token)
+    task.spawn(function()
+        while isCurrent("Start", token) do
+            local b = findUIButton({"start", "play", "begin", "enter"})
+            if b then pcall(function() b:Activate() end) end
+            task.wait(1.5)
+        end
+    end)
 end
 
-local function startAutoReplay()
-    addConn(RunService.Heartbeat:Connect(function()
-        local b = findUIButton({"replay", "again", "restart", "retry"})
-        if b then pcall(function() b:Activate() end) end
-    end))
+local function startAutoReplay(token)
+    task.spawn(function()
+        while isCurrent("Replay", token) do
+            local b = findUIButton({"replay", "again", "restart", "retry"})
+            if b then pcall(function() b:Activate() end) end
+            task.wait(2)
+        end
+    end)
 end
 
-local function startAutoBackLobby()
-    addConn(RunService.Heartbeat:Connect(function()
-        local b = findUIButton({"lobby", "hub", "town", "back"})
-        if b then pcall(function() b:Activate() end) end
-    end))
+local function startAutoBackLobby(token)
+    task.spawn(function()
+        while isCurrent("Lobby", token) do
+            local b = findUIButton({"lobby", "hub", "town", "back"})
+            if b then pcall(function() b:Activate() end) end
+            task.wait(2)
+        end
+    end)
 end
 
-local function startAutoEquip()
-    addConn(RunService.Heartbeat:Connect(function()
-        local inv = LP:FindFirstChild("Inventory") or LP:FindFirstChild("Backpack")
-        if inv then
-            local best, bestScore = nil, 0
-            for _, i in ipairs(inv:GetChildren()) do
-                if i:IsA("Tool") then
-                    local s = #i.Name
-                    if s > bestScore then bestScore = s; best = i end
+local function startAutoEquip(token)
+    task.spawn(function()
+        while isCurrent("Equip", token) do
+            local inv = LP:FindFirstChild("Inventory") or LP:FindFirstChild("Backpack")
+            if inv then
+                local best, bestScore = nil, 0
+                for _, i in ipairs(inv:GetChildren()) do
+                    if i:IsA("Tool") then
+                        local s = 0
+                        for _, tag in ipairs({"Damage", "Power", "Level"}) do
+                            local v = i:GetAttribute(tag)
+                            if type(v) == "number" and v > s then s = v end
+                        end
+                        if s == 0 then s = #i.Name end
+                        if s > bestScore then bestScore = s; best = i end
+                    end
+                end
+                if best and best.Parent ~= LP.Character then
+                    pcall(function() best.Parent = LP.Character end)
                 end
             end
-            if best then pcall(function() best.Parent = LP.Character end) end
+            task.wait(2)
         end
-    end))
+    end)
 end
 
-local function startAutoSell()
-    addConn(RunService.Heartbeat:Connect(function()
-        local b = findUIButton({"sell", "sell all", "dispose"})
-        if b then pcall(function() b:Activate() end) end
-    end))
+local function startAutoSell(token)
+    task.spawn(function()
+        while isCurrent("Sell", token) do
+            local b = findUIButton({"sell all", "sellall", "dispose"})
+            if b then pcall(function() b:Activate() end) end
+            task.wait(3)
+        end
+    end)
 end
 
--- wiring
+-- ============================================================
+-- WIRING
+-- ============================================================
 makeSection("Combat")
-makeToggle("Auto Farm", false, function(v) State.AutoFarm = v; if v then startAutoFarm() else clearConnections() end end)
-makeToggle("Auto Attack", false, function(v) State.AutoAttack = v; if v then startAutoAttack() end end)
-makeToggle("Auto Skill", false, function(v) State.AutoSkill = v; if v then startAutoSkill() end end)
-makeToggle("Kill Aura", false, function(v) State.KillAura = v; if v then startKillAura() end end)
-makeToggle("Auto Dodge", false, function(v) State.AutoDodge = v; if v then startAutoDodge() end end)
+makeToggle("Auto Farm", false, function(v)
+    State.AutoFarm = v
+    if v then startAutoFarm(newToken("Farm")) else stopWalking() end
+end)
+makeToggle("Auto Attack", false, function(v)
+    State.AutoAttack = v
+    if v then startAutoAttack(newToken("Attack")) end
+end)
+makeToggle("Auto Skill", false, function(v)
+    State.AutoSkill = v
+    if v then startAutoSkill(newToken("Skill")) end
+end)
+makeToggle("Kill Aura", false, function(v)
+    State.KillAura = v
+    if v then startKillAura(newToken("Aura")) end
+end)
+makeToggle("Auto Dodge", false, function(v)
+    State.AutoDodge = v
+    if v then startAutoDodge(newToken("Dodge")) end
+end)
 
 makeSection("Dungeon")
-makeToggle("Auto Start", false, function(v) State.AutoStart = v; if v then startAutoStart() end end)
-makeToggle("Auto Replay", false, function(v) State.AutoReplay = v; if v then startAutoReplay() end end)
-makeToggle("Auto Back Lobby", false, function(v) State.AutoBackLobby = v; if v then startAutoBackLobby() end end)
+makeToggle("Auto Start", false, function(v)
+    State.AutoStart = v
+    if v then startAutoStart(newToken("Start")) end
+end)
+makeToggle("Auto Replay", false, function(v)
+    State.AutoReplay = v
+    if v then startAutoReplay(newToken("Replay")) end
+end)
+makeToggle("Auto Back Lobby", false, function(v)
+    State.AutoBackLobby = v
+    if v then startAutoBackLobby(newToken("Lobby")) end
+end)
 
 makeSection("Inventory")
-makeToggle("Auto Equip Best", false, function(v) State.AutoEquip = v; if v then startAutoEquip() end end)
-makeToggle("Auto Sell", false, function(v) State.AutoSell = v; if v then startAutoSell() end end)
+makeToggle("Auto Equip Best", false, function(v)
+    State.AutoEquip = v
+    if v then startAutoEquip(newToken("Equip")) end
+end)
+makeToggle("Auto Sell", false, function(v)
+    State.AutoSell = v
+    if v then startAutoSell(newToken("Sell")) end
+end)
 
 makeSection("Movement")
-makeToggle("Anti-AFK", false, function(v) State.AntiAFK = v; if v then enableAntiAFK() end end)
+makeToggle("Anti-AFK", false, function(v)
+    State.AntiAFK = v
+    if v then enableAntiAFK(newToken("AFK")) end
+end)
 makeToggle("WalkSpeed", false, function(v)
     State.WalkSpeed = v
-    if v then addConn(RunService.Heartbeat:Connect(function() applyWalkSpeed(120) end)) else applyWalkSpeed(16) end
+    if v then
+        addConn(RunService.Heartbeat:Connect(function()
+            if State.WalkSpeed then applyWalkSpeed(120) end
+        end))
+    else
+        applyWalkSpeed(16)
+    end
 end)
-makeToggle("Infinite Jump", false, function(v) State.InfiniteJump = v; if v then enableInfiniteJump() end end)
-makeToggle("NoClip", false, function(v) State.NoClip = v; if v then enableNoClip() end end)
+makeToggle("Infinite Jump", false, function(v)
+    State.InfiniteJump = v
+    if v then enableInfiniteJump(newToken("Jump")) end
+end)
+makeToggle("NoClip", false, function(v)
+    State.NoClip = v
+    if v then enableNoClip(newToken("Clip")) end
+end)
 makeToggle("Fly", false, function(v)
     State.Fly = v
-    if v then enableFly() elseif Threads.FlyCleanup then Threads.FlyCleanup() end
+    if v then enableFly(newToken("Fly")) elseif Threads.FlyCleanup then Threads.FlyCleanup(); Threads.FlyCleanup = nil end
 end)
 
 makeSection("Visual")
 makeToggle("ESP", false, function(v)
     State.ESP = v
-    if v then enableESP() else
-        for _, d in pairs(espCache) do
-            if d.billboard then d.billboard:Destroy() end
-            if d.highlight then d.highlight:Destroy() end
-        end
-        espCache = {}
-    end
+    if v then enableESP(newToken("ESP")) else clearESP() end
 end)
-makeToggle("God Mode", false, function(v) State.GodMode = v; if v then enableGodMode() end end)
+makeToggle("God Mode", false, function(v)
+    State.GodMode = v
+    if v then enableGodMode(newToken("God")) end
+end)
 
 makeSection("Actions")
 makeButton("Teleport to Nearest", teleportToNearest)
