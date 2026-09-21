@@ -1,0 +1,126 @@
+-- Roblox Studio / LocalScript
+-- For a game you own or are explicitly authorized to test.
+-- This provides the UI/state architecture for the requested features.
+-- Connect each toggle to your own server-side game systems.
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+local config = {
+    AutoFarm = false,
+    AutoAttack = false,
+    AutoSkill = false,
+    KillAura = false,
+    AutoDodge = false,
+    BossFarm = false,
+    Aggro = false,
+
+    AutoDungeon = false,
+    AutoStart = false,
+    AutoReplay = false,
+    AutoBackToLobby = false,
+    Difficulty = "Nightmare",
+    Hardcore = false,
+    RaidAutomation = false,
+
+    AutoEquipBest = false,
+    AutoSell = false,
+    KeepEquipped = true,
+    AutoUpgrade = false,
+
+    ESP = false,
+    WalkSpeed = false,
+    Fly = false,
+    InfiniteJump = false,
+    NoClip = false,
+    Teleport = false,
+    GodMode = false,
+
+    AntiAFK = false,
+    PrivateLobby = false,
+
+    FarmDistance = 12,
+    FarmHeight = 4,
+    PathDelay = 0.15,
+}
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "DungeonAuthorizedMenu"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local window = Instance.new("Frame")
+window.Size = UDim2.fromOffset(420, 560)
+window.Position = UDim2.new(0.5, -210, 0.5, -280)
+window.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+window.Parent = gui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 45)
+title.BackgroundTransparency = 1
+title.Text = "Dungeon Test Menu"
+title.TextSize = 24
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Parent = window
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Position = UDim2.fromOffset(10, 50)
+scroll.Size = UDim2.new(1, -20, 1, -60)
+scroll.CanvasSize = UDim2.new()
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.ScrollBarThickness = 6
+scroll.Parent = window
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 6)
+layout.Parent = scroll
+
+local function makeToggle(name)
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(1, -8, 0, 34)
+    button.TextSize = 17
+    button.TextColor3 = Color3.new(1, 1, 1)
+    button.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+    button.Text = name .. ": OFF"
+    button.Parent = scroll
+
+    button.MouseButton1Click:Connect(function()
+        config[name] = not config[name]
+        button.Text = name .. ": " .. (config[name] and "ON" or "OFF")
+
+        -- Hook this into your OWN game's systems.
+        print(name, config[name])
+    end)
+end
+
+for _, name in ipairs({
+    "AutoFarm",
+    "AutoAttack",
+    "AutoSkill",
+    "KillAura",
+    "AutoDodge",
+    "BossFarm",
+    "Aggro",
+    "AutoDungeon",
+    "AutoStart",
+    "AutoReplay",
+    "AutoBackToLobby",
+    "Hardcore",
+    "RaidAutomation",
+    "AutoEquipBest",
+    "AutoSell",
+    "AutoUpgrade",
+    "ESP",
+    "WalkSpeed",
+    "Fly",
+    "InfiniteJump",
+    "NoClip",
+    "Teleport",
+    "GodMode",
+    "AntiAFK",
+    "PrivateLobby",
+}) do
+    makeToggle(name)
+end
+
+print("Dungeon authorized test menu loaded.")
