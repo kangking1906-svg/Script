@@ -1,0 +1,505 @@
+-- language: Lua, file: dqr_hub.lua, target: Roblox Dungeon Quest Reborn, mobile executor
+-- mobile-friendly touch UI, drag + collapse, no key required
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local VirtualUser = game:GetService("VirtualUser")
+
+local LP = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+if CoreGui:FindFirstChild("DQR_Hub") then CoreGui.DQR_Hub:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "DQR_Hub"
+ScreenGui.Parent = CoreGui
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 280, 0, 420)
+MainFrame.Position = UDim2.new(0, 20, 0, 80)
+MainFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
+local stroke = Instance.new("UIStroke", MainFrame)
+stroke.Color = Color3.fromRGB(45, 45, 55)
+stroke.Thickness = 1.5
+
+local TitleBar = Instance.new("Frame", MainFrame)
+TitleBar.Size = UDim2.new(1, 0, 0, 44)
+TitleBar.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+TitleBar.BorderSizePixel = 0
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 12)
+
+local TitleLabel = Instance.new("TextLabel", TitleBar)
+TitleLabel.Size = UDim2.new(1, -80, 1, 0)
+TitleLabel.Position = UDim2.new(0, 14, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "DUNGEON QUEST — VANTA"
+TitleLabel.TextColor3 = Color3.fromRGB(220, 225, 235)
+TitleLabel.TextSize = 14
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local CollapseBtn = Instance.new("TextButton", TitleBar)
+CollapseBtn.Size = UDim2.new(0, 32, 0, 32)
+CollapseBtn.Position = UDim2.new(1, -72, 0, 6)
+CollapseBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+CollapseBtn.Text = "—"
+CollapseBtn.TextColor3 = Color3.fromRGB(180, 185, 200)
+CollapseBtn.TextSize = 18
+CollapseBtn.Font = Enum.Font.GothamBold
+CollapseBtn.BorderSizePixel = 0
+Instance.new("UICorner", CollapseBtn).CornerRadius = UDim.new(0, 8)
+
+local CloseBtn = Instance.new("TextButton", TitleBar)
+CloseBtn.Size = UDim2.new(0, 32, 0, 32)
+CloseBtn.Position = UDim2.new(1, -36, 0, 6)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(55, 25, 30)
+CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Color3.fromRGB(235, 120, 130)
+CloseBtn.TextSize = 14
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.BorderSizePixel = 0
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 8)
+
+local Scroll = Instance.new("ScrollingFrame", MainFrame)
+Scroll.Size = UDim2.new(1, -20, 1, -56)
+Scroll.Position = UDim2.new(0, 10, 0, 50)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 3
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(60, 60, 75)
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+
+local UIList = Instance.new("UIListLayout", Scroll)
+UIList.Padding = UDim.new(0, 6)
+UIList.SortOrder = Enum.SortOrder.LayoutOrder
+
+local Toggles = {}
+
+local function makeSection(text)
+    local s = Instance.new("TextLabel", Scroll)
+    s.Size = UDim2.new(1, 0, 0, 28)
+    s.BackgroundTransparency = 1
+    s.Text = "— " .. text .. " —"
+    s.TextColor3 = Color3.fromRGB(100, 105, 120)
+    s.TextSize = 11
+    s.Font = Enum.Font.GothamBold
+    s.TextXAlignment = Enum.TextXAlignment.Left
+end
+
+local function makeToggle(name, default, callback)
+    local btn = Instance.new("TextButton", Scroll)
+    btn.Size = UDim2.new(1, 0, 0, 38)
+    btn.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+    btn.Text = ""
+    btn.BorderSizePixel = 0
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+
+    local label = Instance.new("TextLabel", btn)
+    label.Size = UDim2.new(1, -70, 1, 0)
+    label.Position = UDim2.new(0, 14, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextColor3 = Color3.fromRGB(200, 205, 215)
+    label.TextSize = 12
+    label.Font = Enum.Font.Gotham
+    label.TextXAlignment = Enum.TextXAlignment.Left
+
+    local indicator = Instance.new("Frame", btn)
+    indicator.Size = UDim2.new(0, 40, 0, 22)
+    indicator.Position = UDim2.new(1, -52, 0.5, -11)
+    indicator.BackgroundColor3 = default and Color3.fromRGB(45, 160, 90) or Color3.fromRGB(45, 45, 55)
+    indicator.BorderSizePixel = 0
+    Instance.new("UICorner", indicator).CornerRadius = UDim.new(0, 11)
+
+    local dot = Instance.new("Frame", indicator)
+    dot.Size = UDim2.new(0, 16, 0, 16)
+    dot.Position = default and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+    dot.BackgroundColor3 = Color3.fromRGB(220, 225, 235)
+    dot.BorderSizePixel = 0
+    Instance.new("UICorner", dot).CornerRadius = UDim.new(0, 8)
+
+    local state = default or false
+    local function setState(v)
+        state = v
+        if state then
+            TweenService:Create(indicator, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(45, 160, 90)}):Play()
+            TweenService:Create(dot, TweenInfo.new(0.15), {Position = UDim2.new(1, -18, 0.5, -8)}):Play()
+        else
+            TweenService:Create(indicator, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(45, 45, 55)}):Play()
+            TweenService:Create(dot, TweenInfo.new(0.15), {Position = UDim2.new(0, 2, 0.5, -8)}):Play()
+        end
+        if callback then callback(state) end
+    end
+    btn.MouseButton1Click:Connect(function() setState(not state) end)
+    Toggles[name] = {set = setState, get = function() return state end}
+end
+
+local function makeButton(name, callback)
+    local btn = Instance.new("TextButton", Scroll)
+    btn.Size = UDim2.new(1, 0, 0, 34)
+    btn.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(200, 205, 215)
+    btn.TextSize = 12
+    btn.Font = Enum.Font.Gotham
+    btn.BorderSizePixel = 0
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    btn.MouseButton1Click:Connect(callback)
+end
+
+local collapsed = false
+CollapseBtn.MouseButton1Click:Connect(function()
+    collapsed = not collapsed
+    MainFrame.Size = collapsed and UDim2.new(0, 280, 0, 44) or UDim2.new(0, 280, 0, 420)
+    CollapseBtn.Text = collapsed and "+" or "—"
+end)
+CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
+
+local State = {
+    AutoFarm=false, AutoAttack=false, AutoSkill=false, KillAura=false,
+    AutoDodge=false, AutoStart=false, AutoReplay=false, AutoBackLobby=false,
+    AutoSell=false, AutoEquip=false, AntiAFK=false, WalkSpeed=false,
+    Fly=false, InfiniteJump=false, NoClip=false, ESP=false, GodMode=false,
+}
+
+local Connections = {}
+local Threads = {}
+
+local function addConn(c) table.insert(Connections, c) end
+local function clearConnections()
+    for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
+    Connections = {}
+end
+
+local function getCharacter() return LP.Character or LP.CharacterAdded:Wait() end
+local function getHumanoid()
+    local c = LP.Character
+    return c and c:FindFirstChildOfClass("Humanoid") or nil
+end
+local function getRoot()
+    local c = LP.Character
+    return c and c:FindFirstChild("HumanoidRootPart") or nil
+end
+
+local function getEnemies()
+    local out = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj ~= LP.Character then
+            local h = obj:FindFirstChildOfClass("Humanoid")
+            if h and h.Health > 0 then
+                local r = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso")
+                if r then table.insert(out, {model=obj, humanoid=h, root=r}) end
+            end
+        end
+    end
+    return out
+end
+
+local function getNearestEnemy(maxDist)
+    local myRoot = getRoot()
+    if not myRoot then return nil end
+    local nearest, nearestDist = nil, maxDist or math.huge
+    for _, e in ipairs(getEnemies()) do
+        local d = (e.root.Position - myRoot.Position).Magnitude
+        if d < nearestDist then nearestDist = d; nearest = e end
+    end
+    return nearest
+end
+
+local function applyWalkSpeed(s)
+    local h = getHumanoid()
+    if h then h.WalkSpeed = s end
+end
+
+local function enableAntiAFK()
+    addConn(LP.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end))
+end
+
+local function enableInfiniteJump()
+    addConn(UserInputService.JumpRequest:Connect(function()
+        local h = getHumanoid()
+        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end))
+end
+
+local function enableNoClip()
+    addConn(RunService.Stepped:Connect(function()
+        local c = LP.Character
+        if c then
+            for _, p in ipairs(c:GetDescendants()) do
+                if p:IsA("BasePart") then p.CanCollide = false end
+            end
+        end
+    end))
+end
+
+local function enableFly()
+    local root, hum = getRoot(), getHumanoid()
+    if not root or not hum then return end
+    local bv = Instance.new("BodyVelocity", root)
+    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+    bv.Velocity = Vector3.zero
+    local bg = Instance.new("BodyGyro", root)
+    bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+    bg.P = 1e4
+    addConn(RunService.RenderStepped:Connect(function()
+        local move = Vector3.zero
+        local cam = Camera.CFrame
+        local gp = UserInputService:GetGamepadState(Enum.UserInputType.Gamepad1)
+        if gp then
+            for _, i in ipairs(gp) do
+                if i.KeyCode == Enum.KeyCode.Thumbstick1 then
+                    move = move + cam.LookVector * i.Position.Z * 80
+                    move = move + cam.RightVector * i.Position.X * 80
+                end
+            end
+        end
+        bv.Velocity = move
+        bg.CFrame = cam
+    end))
+    Threads.FlyCleanup = function()
+        if bv then bv:Destroy() end
+        if bg then bg:Destroy() end
+    end
+end
+
+local function teleportToNearest()
+    local t = getNearestEnemy(9999)
+    local r = getRoot()
+    if t and r then r.CFrame = t.root.CFrame + Vector3.new(0, 3, 0) end
+end
+
+local espCache = {}
+local function enableESP()
+    addConn(RunService.RenderStepped:Connect(function()
+        for _, e in ipairs(getEnemies()) do
+            if not espCache[e.model] then
+                local bb = Instance.new("BillboardGui", e.model)
+                bb.Size = UDim2.new(0, 100, 0, 30)
+                bb.StudsOffset = Vector3.new(0, 3, 0)
+                bb.AlwaysOnTop = true
+                local lbl = Instance.new("TextLabel", bb)
+                lbl.Size = UDim2.new(1, 0, 1, 0)
+                lbl.BackgroundTransparency = 1
+                lbl.Text = e.model.Name .. " [" .. math.floor(e.humanoid.Health) .. "]"
+                lbl.TextColor3 = Color3.fromRGB(255, 80, 80)
+                lbl.TextSize = 11
+                lbl.Font = Enum.Font.GothamBold
+                lbl.TextStrokeTransparency = 0
+                local hl = Instance.new("Highlight", e.model)
+                hl.FillColor = Color3.fromRGB(255, 60, 60)
+                hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                hl.FillTransparency = 0.7
+                espCache[e.model] = {billboard=bb, highlight=hl}
+            else
+                local data = espCache[e.model]
+                if data and data.billboard then
+                    local lbl = data.billboard:FindFirstChildOfClass("TextLabel")
+                    if lbl then lbl.Text = e.model.Name .. " [" .. math.floor(e.humanoid.Health) .. "]" end
+                end
+            end
+        end
+    end))
+end
+
+local function enableGodMode()
+    addConn(RunService.Heartbeat:Connect(function()
+        local h = getHumanoid()
+        if h then h.MaxHealth = math.huge; h.Health = math.huge end
+    end))
+end
+
+local function startAutoAttack()
+    addConn(RunService.Heartbeat:Connect(function()
+        local c = LP.Character
+        if not c then return end
+        local t = c:FindFirstChildOfClass("Tool")
+        if t then pcall(function() t:Activate() end) end
+    end))
+end
+
+local function startAutoSkill()
+    addConn(RunService.Heartbeat:Connect(function()
+        local vim = game:GetService("VirtualInputManager")
+        local keys = {Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.R, Enum.KeyCode.F}
+        for _, k in ipairs(keys) do
+            pcall(function()
+                vim:SendKeyEvent(true, k, false, game)
+                task.wait(0.05)
+                vim:SendKeyEvent(false, k, false, game)
+            end)
+        end
+    end))
+end
+
+local function startKillAura()
+    addConn(RunService.Heartbeat:Connect(function()
+        local r = getRoot()
+        if not r then return end
+        for _, e in ipairs(getEnemies()) do
+            if (e.root.Position - r.Position).Magnitude < 25 then
+                pcall(function()
+                    local rem = game:GetService("ReplicatedStorage"):FindFirstChild("DamageEvent")
+                    if rem then rem:FireServer(e.model, 9999) end
+                end)
+            end
+        end
+    end))
+end
+
+local function startAutoDodge()
+    addConn(RunService.Heartbeat:Connect(function()
+        local r, h = getRoot(), getHumanoid()
+        if not r or not h then return end
+        if h.Health < h.MaxHealth * 0.35 then
+            h:ChangeState(Enum.HumanoidStateType.Jumping)
+            r.Velocity = r.Velocity + Vector3.new(math.random(-20,20), 0, math.random(-20,20))
+        end
+    end))
+end
+
+local function startAutoFarm()
+    addConn(RunService.Heartbeat:Connect(function()
+        local r = getRoot()
+        if not r then return end
+        local target = getNearestEnemy(200)
+        if target then
+            local angle = tick() * 1.5
+            local offset = Vector3.new(math.cos(angle)*12, 3, math.sin(angle)*12)
+            r.CFrame = CFrame.new(target.root.Position + offset, target.root.Position)
+            local t = LP.Character and LP.Character:FindFirstChildOfClass("Tool")
+            if t then pcall(function() t:Activate() end) end
+        end
+    end))
+end
+
+local function findUIButton(names)
+    for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
+        if g:IsA("TextButton") or g:IsA("ImageButton") then
+            for _, n in ipairs(names) do
+                if string.find(string.lower(g.Name), string.lower(n)) then return g end
+            end
+        end
+    end
+    return nil
+end
+
+local function startAutoStart()
+    addConn(RunService.Heartbeat:Connect(function()
+        local b = findUIButton({"start", "play", "begin", "enter"})
+        if b then pcall(function() b:Activate() end) end
+    end))
+end
+
+local function startAutoReplay()
+    addConn(RunService.Heartbeat:Connect(function()
+        local b = findUIButton({"replay", "again", "restart", "retry"})
+        if b then pcall(function() b:Activate() end) end
+    end))
+end
+
+local function startAutoBackLobby()
+    addConn(RunService.Heartbeat:Connect(function()
+        local b = findUIButton({"lobby", "hub", "town", "back"})
+        if b then pcall(function() b:Activate() end) end
+    end))
+end
+
+local function startAutoEquip()
+    addConn(RunService.Heartbeat:Connect(function()
+        local inv = LP:FindFirstChild("Inventory") or LP:FindFirstChild("Backpack")
+        if inv then
+            local best, bestScore = nil, 0
+            for _, i in ipairs(inv:GetChildren()) do
+                if i:IsA("Tool") then
+                    local s = #i.Name
+                    if s > bestScore then bestScore = s; best = i end
+                end
+            end
+            if best then pcall(function() best.Parent = LP.Character end) end
+        end
+    end))
+end
+
+local function startAutoSell()
+    addConn(RunService.Heartbeat:Connect(function()
+        local b = findUIButton({"sell", "sell all", "dispose"})
+        if b then pcall(function() b:Activate() end) end
+    end))
+end
+
+-- wiring
+makeSection("Combat")
+makeToggle("Auto Farm", false, function(v) State.AutoFarm = v; if v then startAutoFarm() else clearConnections() end end)
+makeToggle("Auto Attack", false, function(v) State.AutoAttack = v; if v then startAutoAttack() end end)
+makeToggle("Auto Skill", false, function(v) State.AutoSkill = v; if v then startAutoSkill() end end)
+makeToggle("Kill Aura", false, function(v) State.KillAura = v; if v then startKillAura() end end)
+makeToggle("Auto Dodge", false, function(v) State.AutoDodge = v; if v then startAutoDodge() end end)
+
+makeSection("Dungeon")
+makeToggle("Auto Start", false, function(v) State.AutoStart = v; if v then startAutoStart() end end)
+makeToggle("Auto Replay", false, function(v) State.AutoReplay = v; if v then startAutoReplay() end end)
+makeToggle("Auto Back Lobby", false, function(v) State.AutoBackLobby = v; if v then startAutoBackLobby() end end)
+
+makeSection("Inventory")
+makeToggle("Auto Equip Best", false, function(v) State.AutoEquip = v; if v then startAutoEquip() end end)
+makeToggle("Auto Sell", false, function(v) State.AutoSell = v; if v then startAutoSell() end end)
+
+makeSection("Movement")
+makeToggle("Anti-AFK", false, function(v) State.AntiAFK = v; if v then enableAntiAFK() end end)
+makeToggle("WalkSpeed", false, function(v)
+    State.WalkSpeed = v
+    if v then addConn(RunService.Heartbeat:Connect(function() applyWalkSpeed(120) end)) else applyWalkSpeed(16) end
+end)
+makeToggle("Infinite Jump", false, function(v) State.InfiniteJump = v; if v then enableInfiniteJump() end end)
+makeToggle("NoClip", false, function(v) State.NoClip = v; if v then enableNoClip() end end)
+makeToggle("Fly", false, function(v)
+    State.Fly = v
+    if v then enableFly() elseif Threads.FlyCleanup then Threads.FlyCleanup() end
+end)
+
+makeSection("Visual")
+makeToggle("ESP", false, function(v)
+    State.ESP = v
+    if v then enableESP() else
+        for _, d in pairs(espCache) do
+            if d.billboard then d.billboard:Destroy() end
+            if d.highlight then d.highlight:Destroy() end
+        end
+        espCache = {}
+    end
+end)
+makeToggle("God Mode", false, function(v) State.GodMode = v; if v then enableGodMode() end end)
+
+makeSection("Actions")
+makeButton("Teleport to Nearest", teleportToNearest)
+makeButton("Clear All Connections", function()
+    clearConnections()
+    for _, t in pairs(Toggles) do t.set(false) end
+    applyWalkSpeed(16)
+end)
+
+LP.CharacterAdded:Connect(function()
+    task.wait(1)
+    if State.WalkSpeed then applyWalkSpeed(120) end
+end)
+
+if UserInputService.TouchEnabled then
+    MainFrame.Size = UDim2.new(0, 300, 0, 460)
+end
+
+return true
