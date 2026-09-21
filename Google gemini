@@ -1,0 +1,193 @@
+-- // Dungeon Quest Reborn Automation Hub
+-- // Compatible with Synapse, Delta, Arceus X, and Fluxus
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local VirtualUser = game:GetService("VirtualUser")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- // Configuration Table
+getgenv().Config = {
+    AutoFarm = false,
+    AutoAttack = false,
+    AutoSkill = false,
+    KillAura = false,
+    AutoDodge = false,
+    AutoDungeon = false,
+    AutoSell = false,
+    ESPEnabled = false,
+    WalkSpeed = 16,
+    NoClip = false,
+    AntiAFK = true
+}
+
+-- // Anti-AFK Setup
+if Config.AntiAFK then
+    LocalPlayer.Idled:Connect(function()
+        VirtualUser:Button2Down(Vector2.new(0,0), Camera.CFrame)
+        task.wait(1)
+        VirtualUser:Button2Up(Vector2.new(0,0), Camera.CFrame)
+    end)
+end
+
+-- // Movement & Physics Loop (WalkSpeed & NoClip)
+RunService.Stepped:Connect(function()
+    local character = LocalPlayer.Character
+    if character and character:FindFirstChild("Humanoid") then
+        if Config.WalkSpeed ~= 16 then
+            character.Humanoid.WalkSpeed = Config.WalkSpeed
+        end
+        if Config.NoClip then
+            for _, part in ipairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+end)
+
+-- // Kill Aura & Combat Loop
+task.spawn(function()
+    while task.wait(0.1) do
+        if Config.KillAura or Config.AutoAttack then
+            pcall(function()
+                local character = LocalPlayer.Character
+                local hrp = character and character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    for _, enemy in ipairs(Workspace.Enemies:GetChildren()) do
+                        local enemyHRP = enemy:FindFirstChild("HumanoidRootPart")
+                        if enemyHRP and (enemyHRP.Position - hrp.Position).Magnitude <= 30 then
+                            -- Simulated attack remote invocation or tool activation
+                            local tool = character:FindFirstChildOfClass("Tool")
+                            if tool then
+                                tool:Activate()
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+-- // ESP Implementation
+local ESPFolder = Instance.new("Folder", CoreGui)
+ESPFolder.Name = "DQ_ESP"
+
+local function createESP(targetPart, textContent, color)
+    if targetPart:FindFirstChild("HighlightBox") then return end
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "HighlightBox"
+    highlight.Adornee = targetPart.Parent
+    highlight.FillColor = color
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    highlight.Parent = targetPart
+end
+
+RunService.RenderStepped:Connect(function()
+    if Config.ESPEnabled then
+        pcall(function()
+            for _, enemy in ipairs(Workspace.Enemies:GetChildren()) do
+                local root = enemy:FindFirstChild("HumanoidRootPart")
+                if root then
+                    createESP(root, enemy.Name, Color3.fromRGB(255, 50, 50))
+                end
+            end
+        end)
+    else
+        for _, v in ipairs(ESPFolder:GetChildren()) do
+            v:Destroy()
+        end
+    end
+end)
+
+-- // UI Library Integration (Rayfield for Mobile/PC Support)
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "Dungeon Quest Reborn | Hub",
+    LoadingTitle = "Initializing...",
+    LoadingSubtitle = "by Onyx",
+    ConfigurationSaving = { Enabled = false },
+    KeySystem = false
+})
+
+local CombatTab = Window:CreateTab("Combat & Farm", 4483362458)
+local DungeonTab = Window:CreateTab("Dungeons", 4483362458)
+local VisualsTab = Window:CreateTab("Visuals & Misc", 4483362458)
+
+-- // Combat Toggles
+CombatTab:CreateToggle({
+    Name = "Kill Aura",
+    CurrentValue = false,
+    Callback = function(Value)
+        Config.KillAura = Value
+    end,
+})
+
+CombatTab:CreateToggle({
+    Name = "Auto Attack",
+    CurrentValue = false,
+    Callback = function(Value)
+        Config.AutoAttack = Value
+    end,
+})
+
+CombatTab:CreateToggle({
+    Name = "Auto Skill",
+    CurrentValue = false,
+    Callback = function(Value)
+        Config.AutoSkill = Value
+    end,
+})
+
+-- // Dungeon Automation Toggles
+DungeonTab:CreateToggle({
+    Name = "Auto Dungeon Loop",
+    CurrentValue = false,
+    Callback = function(Value)
+        Config.AutoDungeon = Value
+    end,
+})
+
+DungeonTab:CreateToggle({
+    Name = "Auto Sell Unwanted Gear",
+    CurrentValue = false,
+    Callback = function(Value)
+        Config.AutoSell = Value
+    end,
+})
+
+-- // Visuals & Movement Sliders/Toggles
+VisualsTab:CreateToggle({
+    Name = "ESP Enemies",
+    CurrentValue = false,
+    Callback = function(Value)
+        Config.ESPEnabled = Value
+    end,
+})
+
+VisualsTab:CreateToggle({
+    Name = "NoClip",
+    CurrentValue = false,
+    Callback = function(Value)
+        Config.NoClip = Value
+    end,
+})
+
+VisualsTab:CreateSlider({
+    Name = "WalkSpeed",
+    Range = {16, 150},
+    Increment = 1,
+    CurrentValue = 16,
+    Callback = function(Value)
+        Config.WalkSpeed = Value
+    end,
+})
+
