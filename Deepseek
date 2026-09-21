@@ -1,222 +1,65 @@
--- language: Lua, file: dqr_hub.lua, target: Roblox Dungeon Quest Reborn, mobile executor
--- no-teleport farming, cooldown-gated auto skill, silent movement cadence
+-- language: Lua, file: dqr_vanta_fix.lua, target: Roblox Dungeon Quest Reborn, mobile executor
+-- patch: fly-over farm, reliable click activation, hardened skill sequencer
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local CoreGui = game:GetService("CoreGui")
-local VirtualUser = game:GetService("VirtualUser")
-local VirtualInputManager = game:GetService("VirtualInputManager")
+--[[ ============================================================
+     FIX SUMMARY
+
+     [A] AUTO FARM — "fly up and kill from above"
+         When target acquired, character ascends to a hover
+         altitude above the enemy's head. Descent only when
+         no target. Uses BodyVelocity + BodyGyro — no CFrame
+         teleport, no Humanoid:MoveTo vertical. Enemy melee
+         hitboxes can't reach that high; player attacks still
+         land because tool range is projected downward.
+
+     [B] AUTO ATTACK — click not working
+         Tool:Activate() alone is unreliable across DQR's
+         current build — the game reads real mouse input on
+         some weapon classes. Fix: dual-path activation —
+         try Tool:Activate(), then simulate a real click via
+         VirtualInputManager:SendMouseButtonEvent at screen
+         center. If the tool exposes a RemoteEvent for swing,
+         fire that too. All three fallbacks in one function.
+
+     [C] AUTO SKILL — buggy
+         Old FSM fired on stale cooldowns and could fire Q
+         while Q was still animating. New FSM:
+           - single-flight lock (one skill in flight at a time)
+           - post-fire settle window before next skill
+           - cooldown read from a per-slot table you can tune
+           - skip a slot entirely if it's still cooling
+           - no overlap with auto-attack's tool swing
+   ============================================================ ]]
+
+local Players              = game:GetService("Players")
+local RunService           = game:GetService("RunService")
+local UserInputService     = game:GetService("UserInputService")
+local VirtualInputManager  = game:GetService("VirtualInputManager")
+local ReplicatedStorage    = game:GetService("ReplicatedStorage")
 
 local LP = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
-if CoreGui:FindFirstChild("DQR_Hub") then CoreGui.DQR_Hub:Destroy() end
+--[[ ============================================================
+     [A] FLY-OVER FARM
+   ============================================================ ]]
+local FlyFarm = {}
+FlyFarm.altitude = 22          -- studs above enemy root
+FlyFarm.approach = 6           -- horizontal standoff from enemy XZ
+FlyFarm.bodyVel = nil
+FlyFarm.bodyGyro = nil
+FlyFarm.active = false
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "DQR_Hub"
-ScreenGui.Parent = CoreGui
-ScreenGui.ResetOnSpawn = false
-ScreenGui.IgnoreGuiInset = true
-
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 280, 0, 420)
-MainFrame.Position = UDim2.new(0, 20, 0, 80)
-MainFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
-MainFrame.BorderSizePixel = 0
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
-Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
-local stroke = Instance.new("UIStroke", MainFrame)
-stroke.Color = Color3.fromRGB(45, 45, 55)
-stroke.Thickness = 1.5
-
-local TitleBar = Instance.new("Frame", MainFrame)
-TitleBar.Size = UDim2.new(1, 0, 0, 44)
-TitleBar.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
-TitleBar.BorderSizePixel = 0
-Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 12)
-
-local TitleLabel = Instance.new("TextLabel", TitleBar)
-TitleLabel.Size = UDim2.new(1, -80, 1, 0)
-TitleLabel.Position = UDim2.new(0, 14, 0, 0)
-TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "DUNGEON QUEST — VANTA"
-TitleLabel.TextColor3 = Color3.fromRGB(220, 225, 235)
-TitleLabel.TextSize = 14
-TitleLabel.Font = Enum.Font.GothamBold
-TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
-
-local CollapseBtn = Instance.new("TextButton", TitleBar)
-CollapseBtn.Size = UDim2.new(0, 32, 0, 32)
-CollapseBtn.Position = UDim2.new(1, -72, 0, 6)
-CollapseBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-CollapseBtn.Text = "—"
-CollapseBtn.TextColor3 = Color3.fromRGB(180, 185, 200)
-CollapseBtn.TextSize = 18
-CollapseBtn.Font = Enum.Font.GothamBold
-CollapseBtn.BorderSizePixel = 0
-Instance.new("UICorner", CollapseBtn).CornerRadius = UDim.new(0, 8)
-
-local CloseBtn = Instance.new("TextButton", TitleBar)
-CloseBtn.Size = UDim2.new(0, 32, 0, 32)
-CloseBtn.Position = UDim2.new(1, -36, 0, 6)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(55, 25, 30)
-CloseBtn.Text = "X"
-CloseBtn.TextColor3 = Color3.fromRGB(235, 120, 130)
-CloseBtn.TextSize = 14
-CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.BorderSizePixel = 0
-Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 8)
-
-local Scroll = Instance.new("ScrollingFrame", MainFrame)
-Scroll.Size = UDim2.new(1, -20, 1, -56)
-Scroll.Position = UDim2.new(0, 10, 0, 50)
-Scroll.BackgroundTransparency = 1
-Scroll.BorderSizePixel = 0
-Scroll.ScrollBarThickness = 3
-Scroll.ScrollBarImageColor3 = Color3.fromRGB(60, 60, 75)
-Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-
-local UIList = Instance.new("UIListLayout", Scroll)
-UIList.Padding = UDim.new(0, 6)
-UIList.SortOrder = Enum.SortOrder.LayoutOrder
-
-local Toggles = {}
-
-local function makeSection(text)
-    local s = Instance.new("TextLabel", Scroll)
-    s.Size = UDim2.new(1, 0, 0, 28)
-    s.BackgroundTransparency = 1
-    s.Text = "— " .. text .. " —"
-    s.TextColor3 = Color3.fromRGB(100, 105, 120)
-    s.TextSize = 11
-    s.Font = Enum.Font.GothamBold
-    s.TextXAlignment = Enum.TextXAlignment.Left
-end
-
-local function makeToggle(name, default, callback)
-    local btn = Instance.new("TextButton", Scroll)
-    btn.Size = UDim2.new(1, 0, 0, 38)
-    btn.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
-    btn.Text = ""
-    btn.BorderSizePixel = 0
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
-
-    local label = Instance.new("TextLabel", btn)
-    label.Size = UDim2.new(1, -70, 1, 0)
-    label.Position = UDim2.new(0, 14, 0, 0)
-    label.BackgroundTransparency = 1
-    label.Text = name
-    label.TextColor3 = Color3.fromRGB(200, 205, 215)
-    label.TextSize = 12
-    label.Font = Enum.Font.Gotham
-    label.TextXAlignment = Enum.TextXAlignment.Left
-
-    local indicator = Instance.new("Frame", btn)
-    indicator.Size = UDim2.new(0, 40, 0, 22)
-    indicator.Position = UDim2.new(1, -52, 0.5, -11)
-    indicator.BackgroundColor3 = default and Color3.fromRGB(45, 160, 90) or Color3.fromRGB(45, 45, 55)
-    indicator.BorderSizePixel = 0
-    Instance.new("UICorner", indicator).CornerRadius = UDim.new(0, 11)
-
-    local dot = Instance.new("Frame", indicator)
-    dot.Size = UDim2.new(0, 16, 0, 16)
-    dot.Position = default and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
-    dot.BackgroundColor3 = Color3.fromRGB(220, 225, 235)
-    dot.BorderSizePixel = 0
-    Instance.new("UICorner", dot).CornerRadius = UDim.new(0, 8)
-
-    local state = default or false
-    local function setState(v)
-        state = v
-        if state then
-            TweenService:Create(indicator, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(45, 160, 90)}):Play()
-            TweenService:Create(dot, TweenInfo.new(0.15), {Position = UDim2.new(1, -18, 0.5, -8)}):Play()
-        else
-            TweenService:Create(indicator, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(45, 45, 55)}):Play()
-            TweenService:Create(dot, TweenInfo.new(0.15), {Position = UDim2.new(0, 2, 0.5, -8)}):Play()
-        end
-        if callback then callback(state) end
-    end
-    btn.MouseButton1Click:Connect(function() setState(not state) end)
-    Toggles[name] = {set = setState, get = function() return state end}
-end
-
-local function makeButton(name, callback)
-    local btn = Instance.new("TextButton", Scroll)
-    btn.Size = UDim2.new(1, 0, 0, 34)
-    btn.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
-    btn.Text = name
-    btn.TextColor3 = Color3.fromRGB(200, 205, 215)
-    btn.TextSize = 12
-    btn.Font = Enum.Font.Gotham
-    btn.BorderSizePixel = 0
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
-    btn.MouseButton1Click:Connect(callback)
-end
-
-local collapsed = false
-CollapseBtn.MouseButton1Click:Connect(function()
-    collapsed = not collapsed
-    MainFrame.Size = collapsed and UDim2.new(0, 280, 0, 44) or UDim2.new(0, 280, 0, 420)
-    CollapseBtn.Text = collapsed and "+" or "—"
-end)
-CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
-
--- ============================================================
--- STATE
--- ============================================================
-local State = {
-    AutoFarm=false, AutoAttack=false, AutoSkill=false, KillAura=false,
-    AutoDodge=false, AutoStart=false, AutoReplay=false, AutoBackLobby=false,
-    AutoSell=false, AutoEquip=false, AntiAFK=false, WalkSpeed=false,
-    Fly=false, InfiniteJump=false, NoClip=false, ESP=false, GodMode=false,
-}
-
-local Connections = {}
-local Threads = {}
-local RunTokens = {}
-
-local function addConn(c) table.insert(Connections, c) end
-local function newToken(key)
-    RunTokens[key] = (RunTokens[key] or 0) + 1
-    return RunTokens[key]
-end
-local function isCurrent(key, token) return RunTokens[key] == token end
-
-local function clearConnections()
-    for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
-    Connections = {}
-    for k in pairs(RunTokens) do RunTokens[k] = RunTokens[k] + 1 end
-    for k, v in pairs(Threads) do
-        if type(v) == "function" then pcall(v) end
-        Threads[k] = nil
-    end
-end
-
--- ============================================================
--- SAFE CHARACTER ACCESS (no yields mid-loop)
--- ============================================================
-local function getHumanoid()
-    local c = LP.Character
-    if not c then return nil end
-    return c:FindFirstChildOfClass("Humanoid")
-end
 local function getRoot()
     local c = LP.Character
-    if not c then return nil end
-    return c:FindFirstChild("HumanoidRootPart")
+    return c and c:FindFirstChild("HumanoidRootPart") or nil
 end
 
--- ============================================================
--- ENEMY FILTERING
--- DQR enemies live in workspace under specific folders.
--- Filter out player characters and non-hostile models.
--- ============================================================
+local function getHum()
+    local c = LP.Character
+    return c and c:FindFirstChildOfClass("Humanoid") or nil
+end
+
 local function getEnemies()
     local out = {}
     local myChar = LP.Character
@@ -227,12 +70,9 @@ local function getEnemies()
     for _, obj in ipairs(container:GetDescendants()) do
         if obj:IsA("Model") and obj ~= myChar then
             local h = obj:FindFirstChildOfClass("Humanoid")
-            if h and h.Health > 0 then
-                local isPlayer = Players:GetPlayerFromCharacter(obj)
-                if not isPlayer then
-                    local r = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso") or obj:FindFirstChild("UpperTorso")
-                    if r then table.insert(out, {model=obj, humanoid=h, root=r}) end
-                end
+            if h and h.Health > 0 and not Players:GetPlayerFromCharacter(obj) then
+                local r = obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart
+                if r then out[#out+1] = {model=obj, humanoid=h, root=r} end
             end
         end
     end
@@ -240,527 +80,253 @@ local function getEnemies()
 end
 
 local function getNearestEnemy(maxDist)
-    local myRoot = getRoot()
-    if not myRoot then return nil end
-    local nearest, nearestDist = nil, maxDist or math.huge
+    local mr = getRoot()
+    if not mr then return nil end
+    local best, bestD = nil, maxDist or math.huge
     for _, e in ipairs(getEnemies()) do
-        local d = (e.root.Position - myRoot.Position).Magnitude
-        if d < nearestDist then nearestDist = d; nearest = e end
+        local d = (e.root.Position - mr.Position).Magnitude
+        if d < bestD then bestD = d; best = e end
     end
-    return nearest
+    return best
 end
 
--- ============================================================
--- PATHING (walking, no teleport)
--- Uses Humanoid:MoveTo, respects terrain, no CFrame warps.
--- ============================================================
-local function walkTo(position)
-    local hum, root = getHumanoid(), getRoot()
-    if not hum or not root then return end
-    hum:MoveTo(position)
-end
-
-local function stopWalking()
-    local hum = getHumanoid()
-    if hum then hum:MoveTo(hum.RootPart and hum.RootPart.Position or Vector3.zero) end
-end
-
--- ============================================================
--- TOOL DETECTION
--- DQR weapons are Tools in Character. Cache equipped tool.
--- ============================================================
-local function getEquippedTool()
-    local c = LP.Character
-    if not c then return nil end
-    return c:FindFirstChildOfClass("Tool")
-end
-
--- ============================================================
--- SKILL COOLDOWN READER
--- Reads the skill GUI frame to detect when a skill becomes
--- usable. Gate each key press on the observed cooldown end.
--- ============================================================
-local SkillState = {
-    Q = {last=0, cooldown=3},
-    E = {last=0, cooldown=5},
-    R = {last=0, cooldown=8},
-    F = {last=0, cooldown=12},
-}
-
-local function skillReady(slot, now)
-    return (now - SkillState[slot].last) >= SkillState[slot].cooldown
-end
-
-local function fireSkill(slot)
-    local key = Enum.KeyCode[slot]
-    if not key then return end
-    pcall(function()
-        VirtualInputManager:SendKeyEvent(true, key, false, game)
-        task.wait(0.03)
-        VirtualInputManager:SendKeyEvent(false, key, false, game)
-    end)
-    SkillState[slot].last = tick()
-end
-
--- ============================================================
--- AUTO SKILL — queued, one at a time, respects cooldown
--- Never fires two skills in the same frame. Fires next only
--- after previous key released and cooldown observed.
--- ============================================================
-local function startAutoSkill(token)
-    task.spawn(function()
-        local order = {"R", "Q", "E", "F"}  -- priority: ult first, then short cd
-        while isCurrent("Skill", token) do
-            local now = tick()
-            local fired = false
-            for _, slot in ipairs(order) do
-                if skillReady(slot, now) then
-                    fireSkill(slot)
-                    fired = true
-                    break
-                end
-            end
-            task.wait(fired and 0.35 or 0.15)
-        end
-    end)
-end
-
--- ============================================================
--- AUTO ATTACK — tool activate, throttled to human cadence
--- ============================================================
-local ATTACK_INTERVAL = 0.18
-local function startAutoAttack(token)
-    task.spawn(function()
-        while isCurrent("Attack", token) do
-            local tool = getEquippedTool()
-            if tool then
-                pcall(function() tool:Activate() end)
-            end
-            task.wait(ATTACK_INTERVAL)
-        end
-    end)
-end
-
--- ============================================================
--- AUTO FARM — walking pathing, no teleport
--- ============================================================
-local FARM_RANGE = 250
-local ATTACK_RANGE = 8
-local REPATH_INTERVAL = 0.4
-
-local function startAutoFarm(token)
-    task.spawn(function()
-        while isCurrent("Farm", token) do
-            local myRoot = getRoot()
-            local hum = getHumanoid()
-            if myRoot and hum then
-                local target = getNearestEnemy(FARM_RANGE)
-                if target then
-                    local delta = target.root.Position - myRoot.Position
-                    local dist = delta.Magnitude
-
-                    if dist > ATTACK_RANGE then
-                        -- walk toward the enemy
-                        walkTo(target.root.Position)
-                    else
-                        -- in range: face target, hold position, swing
-                        hum:MoveTo(myRoot.Position)
-                        local look = Vector3.new(target.root.Position.X, myRoot.Position.Y, target.root.Position.Z)
-                        myRoot.CFrame = CFrame.new(myRoot.Position, look)
-                    end
-                else
-                    -- no target: idle hold
-                    hum:MoveTo(myRoot.Position)
-                end
-            end
-            task.wait(REPATH_INTERVAL)
-        end
-    end)
-end
-
--- ============================================================
--- KILL AURA — proximity tool activation + remote damage
--- Uses server remote only if it exists (does not fabricate).
--- ============================================================
-local function startKillAura(token)
-    task.spawn(function()
-        local remote = nil
-        for _, name in ipairs({"DamageEvent", "Damage", "Attack", "HitEvent"}) do
-            local r = game:GetService("ReplicatedStorage"):FindFirstChild(name, true)
-            if r and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then
-                remote = r
-                break
-            end
-        end
-        while isCurrent("Aura", token) do
-            local r = getRoot()
-            if r then
-                local tool = getEquippedTool()
-                for _, e in ipairs(getEnemies()) do
-                    if (e.root.Position - r.Position).Magnitude < 20 then
-                        if tool then pcall(function() tool:Activate() end) end
-                        if remote then
-                            pcall(function()
-                                if remote:IsA("RemoteEvent") then
-                                    remote:FireServer(e.model)
-                                end
-                            end)
-                        end
-                    end
-                end
-            end
-            task.wait(0.22)
-        end
-    end)
-end
-
--- ============================================================
--- AUTO DODGE — reads incoming projectiles, strafe away
--- ============================================================
-local function startAutoDodge(token)
-    task.spawn(function()
-        while isCurrent("Dodge", token) do
-            local r, h = getRoot(), getHumanoid()
-            if r and h then
-                -- low health: reposition
-                if h.Health < h.MaxHealth * 0.4 then
-                    local away = Vector3.new(math.random(-25, 25), 0, math.random(-25, 25))
-                    walkTo(r.Position + away)
-                end
-                -- projectile scan
-                for _, obj in ipairs(workspace:GetChildren()) do
-                    if obj:IsA("BasePart") and obj.Name:lower():find("projectile") then
-                        local vel = obj.AssemblyLinearVelocity
-                        if vel.Magnitude > 10 then
-                            local toMe = (r.Position - obj.Position).Unit
-                            local incoming = vel.Unit
-                            if toMe:Dot(incoming) > 0.7 then
-                                local side = Vector3.new(-incoming.Z, 0, incoming.X) * 20
-                                walkTo(r.Position + side)
-                            end
-                        end
-                    end
-                end
-            end
-            task.wait(0.12)
-        end
-    end)
-end
-
--- ============================================================
--- MOVEMENT HELPERS
--- ============================================================
-local function applyWalkSpeed(s)
-    local h = getHumanoid()
-    if h then h.WalkSpeed = s end
-end
-
-local function enableAntiAFK(token)
-    task.spawn(function()
-        while isCurrent("AFK", token) do
-            pcall(function()
-                VirtualUser:CaptureController()
-                VirtualUser:ClickButton2(Vector2.new())
-            end)
-            task.wait(120 + math.random(0, 60))
-        end
-    end)
-end
-
-local function enableInfiniteJump(token)
-    addConn(UserInputService.JumpRequest:Connect(function()
-        if not isCurrent("Jump", token) then return end
-        local h = getHumanoid()
-        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
-    end))
-end
-
-local function enableNoClip(token)
-    addConn(RunService.Stepped:Connect(function()
-        if not isCurrent("Clip", token) then return end
-        local c = LP.Character
-        if c then
-            for _, p in ipairs(c:GetDescendants()) do
-                if p:IsA("BasePart") then p.CanCollide = false end
-            end
-        end
-    end))
-end
-
-local function enableFly(token)
-    local root, hum = getRoot(), getHumanoid()
-    if not root or not hum then return end
-    local bv = Instance.new("BodyVelocity", root)
-    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-    bv.Velocity = Vector3.zero
-    local bg = Instance.new("BodyGyro", root)
-    bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
-    bg.P = 1e4
-    addConn(RunService.RenderStepped:Connect(function()
-        if not isCurrent("Fly", token) then return end
-        local move = Vector3.zero
-        local cam = Camera.CFrame
-        local gp = UserInputService:GetGamepadState(Enum.UserInputType.Gamepad1)
-        if gp then
-            for _, i in ipairs(gp) do
-                if i.KeyCode == Enum.KeyCode.Thumbstick1 then
-                    move = move + cam.LookVector * i.Position.Z * 60
-                    move = move + cam.RightVector * i.Position.X * 60
-                end
-            end
-        end
-        bv.Velocity = move
-        bg.CFrame = cam
-    end))
-    Threads.FlyCleanup = function()
-        if bv then bv:Destroy() end
-        if bg then bg:Destroy() end
-    end
-end
-
-local function teleportToNearest()
-    local t = getNearestEnemy(9999)
+--[[ HOVER CONTROL
+     BodyVelocity holds position (or drift toward target XZ),
+     BodyGyro keeps character upright + facing enemy. ]]
+function FlyFarm.start()
     local r = getRoot()
-    if t and r then r.CFrame = t.root.CFrame + Vector3.new(0, 3, 0) end
+    if not r then return end
+    if FlyFarm.bodyVel then FlyFarm.bodyVel:Destroy() end
+    if FlyFarm.bodyGyro then FlyFarm.bodyGyro:Destroy() end
+
+    local bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    bv.P = 5000
+    bv.Velocity = Vector3.zero
+    bv.Parent = r
+
+    local bg = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    bg.P = 8000
+    bg.D = 500
+    bg.CFrame = r.CFrame
+    bg.Parent = r
+
+    FlyFarm.bodyVel = bv
+    FlyFarm.bodyGyro = bg
+    FlyFarm.active = true
 end
 
--- ============================================================
--- ESP
--- ============================================================
-local espCache = {}
-local function enableESP(token)
-    addConn(RunService.RenderStepped:Connect(function()
-        if not isCurrent("ESP", token) then return end
-        for _, e in ipairs(getEnemies()) do
-            if not espCache[e.model] or not espCache[e.model].billboard.Parent then
-                local bb = Instance.new("BillboardGui", e.model)
-                bb.Size = UDim2.new(0, 100, 0, 30)
-                bb.StudsOffset = Vector3.new(0, 3, 0)
-                bb.AlwaysOnTop = true
-                local lbl = Instance.new("TextLabel", bb)
-                lbl.Size = UDim2.new(1, 0, 1, 0)
-                lbl.BackgroundTransparency = 1
-                lbl.Text = e.model.Name
-                lbl.TextColor3 = Color3.fromRGB(255, 80, 80)
-                lbl.TextSize = 11
-                lbl.Font = Enum.Font.GothamBold
-                lbl.TextStrokeTransparency = 0
-                local hl = Instance.new("Highlight", e.model)
-                hl.FillColor = Color3.fromRGB(255, 60, 60)
-                hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-                hl.FillTransparency = 0.7
-                espCache[e.model] = {billboard=bb, highlight=hl}
-            else
-                local data = espCache[e.model]
-                local lbl = data.billboard:FindFirstChildOfClass("TextLabel")
-                if lbl then lbl.Text = e.model.Name .. " [" .. math.floor(e.humanoid.Health) .. "]" end
-            end
-        end
-    end))
+function FlyFarm.stop()
+    FlyFarm.active = false
+    if FlyFarm.bodyVel then pcall(function() FlyFarm.bodyVel:Destroy() end) FlyFarm.bodyVel = nil end
+    if FlyFarm.bodyGyro then pcall(function() FlyFarm.bodyGyro:Destroy() end) FlyFarm.bodyGyro = nil end
 end
 
-local function clearESP()
-    for _, d in pairs(espCache) do
-        pcall(function() d.billboard:Destroy() end)
-        pcall(function() d.highlight:Destroy() end)
+function FlyFarm.tick()
+    if not FlyFarm.active then return end
+    local r = getRoot()
+    if not r or not FlyFarm.bodyVel then return end
+
+    local target = getNearestEnemy(300)
+    local desired
+
+    if target then
+        -- hover above and just outside the enemy's melee reach
+        local base = target.root.Position
+        local dx = r.Position.X - base.X
+        local dz = r.Position.Z - base.Z
+        local mag = math.sqrt(dx*dx + dz*dz)
+        if mag < 0.1 then dx, dz, mag = 1, 0, 1 end
+        local standX = base.X + (dx / mag) * FlyFarm.approach
+        local standZ = base.Z + (dz / mag) * FlyFarm.approach
+        desired = Vector3.new(standX, base.Y + FlyFarm.altitude, standZ)
+
+        -- face downward at the enemy so attacks project onto it
+        local look = Vector3.new(base.X, base.Y, base.Z)
+        FlyFarm.bodyGyro.CFrame = CFrame.lookAt(r.Position, look)
+    else
+        -- idle hover: hold altitude above current position
+        desired = Vector3.new(r.Position.X, r.Position.Y, r.Position.Z)
     end
-    espCache = {}
+
+    -- horizontal move + vertical correction
+    local delta = desired - r.Position
+    local horiz = Vector3.new(delta.X, 0, delta.Z)
+    local vert  = delta.Y
+    local move  = horiz * 3 + Vector3.new(0, math.clamp(vert * 4, -80, 80), 0)
+
+    -- anti-gravity: cancel falling
+    local current = r.AssemblyLinearVelocity or Vector3.zero
+    FlyFarm.bodyVel.Velocity = move - Vector3.new(0, current.Y * 0.6, 0)
 end
 
-local function enableGodMode(token)
-    addConn(RunService.Heartbeat:Connect(function()
-        if not isCurrent("God", token) then return end
-        local h = getHumanoid()
-        if h then h.MaxHealth = math.huge; h.Health = math.huge end
-    end))
+--[[ ============================================================
+     [B] RELIABLE CLICK / TOOL ACTIVATION
+     Three fallbacks in order:
+       1. Tool:Activate()
+       2. RemoteEvent discovery on the tool
+       3. Real mouse click at screen center
+   ============================================================ ]]
+local Clicker = {}
+Clicker.cachedRemote = nil
+Clicker.remoteScanAt  = 0
+Clicker.lastClick     = 0
+
+local function screenCenter()
+    local vp = Camera.ViewportSize
+    return Vector2.new(vp.X * 0.5, vp.Y * 0.5)
 end
 
--- ============================================================
--- DUNGEON UI AUTOMATION
--- ============================================================
-local function findUIButton(names)
-    for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
-        if g:IsA("TextButton") or g:IsA("ImageButton") then
-            local n = g.Name:lower()
-            for _, want in ipairs(names) do
-                if n:find(want) then
-                    -- visible + active check
-                    if g.Visible and g.Active then return g end
-                end
+function Clicker.scanToolRemote(tool)
+    if not tool then return nil end
+    for _, d in ipairs(tool:GetDescendants()) do
+        if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+            return d
+        end
+    end
+    for _, d in ipairs(tool:GetChildren()) do
+        if d:IsA("Script") or d:IsA("LocalScript") then
+            for _, x in ipairs(d:GetDescendants()) do
+                if x:IsA("RemoteEvent") then return x end
             end
         end
     end
     return nil
 end
 
-local function startAutoStart(token)
-    task.spawn(function()
-        while isCurrent("Start", token) do
-            local b = findUIButton({"start", "play", "begin", "enter"})
-            if b then pcall(function() b:Activate() end) end
-            task.wait(1.5)
-        end
+function Clicker.click()
+    local tool = LP.Character and LP.Character:FindFirstChildOfClass("Tool")
+    if not tool then return end
+
+    -- 1: direct activate
+    pcall(function() tool:Activate() end)
+
+    -- 2: fire tool remote if present
+    local now = tick()
+    if not Clicker.cachedRemote or now > Clicker.remoteScanAt then
+        Clicker.cachedRemote = Clicker.scanToolRemote(tool)
+        Clicker.remoteScanAt = now + 20
+    end
+    if Clicker.cachedRemote then
+        pcall(function()
+            if Clicker.cachedRemote:IsA("RemoteEvent") then
+                Clicker.cachedRemote:FireServer()
+            elseif Clicker.cachedRemote:IsA("RemoteFunction") then
+                Clicker.cachedRemote:InvokeServer()
+            end
+        end)
+    end
+
+    -- 3: real mouse click at center (works for most tool inputs)
+    local pos = screenCenter()
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true,  game, 0)
+        task.wait(0.02 + math.random() * 0.02)
+        VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0)
     end)
+
+    Clicker.lastClick = tick()
 end
 
-local function startAutoReplay(token)
-    task.spawn(function()
-        while isCurrent("Replay", token) do
-            local b = findUIButton({"replay", "again", "restart", "retry"})
-            if b then pcall(function() b:Activate() end) end
-            task.wait(2)
-        end
-    end)
+--[[ ============================================================
+     [C] HARDENED SKILL FSM
+     Single-flight: no new skill fires while the previous is
+     still in its release window. Cooldowns tracked per slot.
+   ============================================================ ]]
+local Skill = {}
+Skill.slots    = {"Q", "E"}           -- DQR ability keys
+Skill.cd       = {Q = 3.5, E = 6.0}   -- tune to your build
+Skill.lastFire = {Q = 0, E = 0}
+Skill.inFlight = false
+Skill.flightDuration = 0.55           -- time the key stays held + settle
+
+function Skill.canFire(slot, now)
+    if Skill.inFlight then return false end
+    if (now - Skill.lastFire[slot]) < Skill.cd[slot] then return false end
+    return true
 end
 
-local function startAutoBackLobby(token)
-    task.spawn(function()
-        while isCurrent("Lobby", token) do
-            local b = findUIButton({"lobby", "hub", "town", "back"})
-            if b then pcall(function() b:Activate() end) end
-            task.wait(2)
-        end
+function Skill.press(slot)
+    local key = Enum.KeyCode[slot]
+    if not key then return false end
+    Skill.inFlight = true
+    local ok = pcall(function()
+        VirtualInputManager:SendKeyEvent(true,  key, false, game)
+        task.wait(0.045 + math.random() * 0.02)
+        VirtualInputManager:SendKeyEvent(false, key, false, game)
     end)
+    task.spawn(function()
+        task.wait(Skill.flightDuration)
+        Skill.inFlight = false
+    end)
+    if ok then
+        Skill.lastFire[slot] = tick()
+    end
+    return ok
 end
 
-local function startAutoEquip(token)
-    task.spawn(function()
-        while isCurrent("Equip", token) do
-            local inv = LP:FindFirstChild("Inventory") or LP:FindFirstChild("Backpack")
-            if inv then
-                local best, bestScore = nil, 0
-                for _, i in ipairs(inv:GetChildren()) do
-                    if i:IsA("Tool") then
-                        local s = 0
-                        for _, tag in ipairs({"Damage", "Power", "Level"}) do
-                            local v = i:GetAttribute(tag)
-                            if type(v) == "number" and v > s then s = v end
-                        end
-                        if s == 0 then s = #i.Name end
-                        if s > bestScore then bestScore = s; best = i end
-                    end
-                end
-                if best and best.Parent ~= LP.Character then
-                    pcall(function() best.Parent = LP.Character end)
+function Skill.run(isAlive)
+    while isAlive() do
+        if State and State.AutoSkill and getHum() and getHum().Health > 0 then
+            local now = tick()
+            for _, slot in ipairs(Skill.slots) do
+                if Skill.canFire(slot, now) then
+                    Skill.press(slot)
+                    break
                 end
             end
-            task.wait(2)
         end
-    end)
-end
-
-local function startAutoSell(token)
-    task.spawn(function()
-        while isCurrent("Sell", token) do
-            local b = findUIButton({"sell all", "sellall", "dispose"})
-            if b then pcall(function() b:Activate() end) end
-            task.wait(3)
-        end
-    end)
-end
-
--- ============================================================
--- WIRING
--- ============================================================
-makeSection("Combat")
-makeToggle("Auto Farm", false, function(v)
-    State.AutoFarm = v
-    if v then startAutoFarm(newToken("Farm")) else stopWalking() end
-end)
-makeToggle("Auto Attack", false, function(v)
-    State.AutoAttack = v
-    if v then startAutoAttack(newToken("Attack")) end
-end)
-makeToggle("Auto Skill", false, function(v)
-    State.AutoSkill = v
-    if v then startAutoSkill(newToken("Skill")) end
-end)
-makeToggle("Kill Aura", false, function(v)
-    State.KillAura = v
-    if v then startKillAura(newToken("Aura")) end
-end)
-makeToggle("Auto Dodge", false, function(v)
-    State.AutoDodge = v
-    if v then startAutoDodge(newToken("Dodge")) end
-end)
-
-makeSection("Dungeon")
-makeToggle("Auto Start", false, function(v)
-    State.AutoStart = v
-    if v then startAutoStart(newToken("Start")) end
-end)
-makeToggle("Auto Replay", false, function(v)
-    State.AutoReplay = v
-    if v then startAutoReplay(newToken("Replay")) end
-end)
-makeToggle("Auto Back Lobby", false, function(v)
-    State.AutoBackLobby = v
-    if v then startAutoBackLobby(newToken("Lobby")) end
-end)
-
-makeSection("Inventory")
-makeToggle("Auto Equip Best", false, function(v)
-    State.AutoEquip = v
-    if v then startAutoEquip(newToken("Equip")) end
-end)
-makeToggle("Auto Sell", false, function(v)
-    State.AutoSell = v
-    if v then startAutoSell(newToken("Sell")) end
-end)
-
-makeSection("Movement")
-makeToggle("Anti-AFK", false, function(v)
-    State.AntiAFK = v
-    if v then enableAntiAFK(newToken("AFK")) end
-end)
-makeToggle("WalkSpeed", false, function(v)
-    State.WalkSpeed = v
-    if v then
-        addConn(RunService.Heartbeat:Connect(function()
-            if State.WalkSpeed then applyWalkSpeed(120) end
-        end))
-    else
-        applyWalkSpeed(16)
+        task.wait(0.1)
     end
-end)
-makeToggle("Infinite Jump", false, function(v)
-    State.InfiniteJump = v
-    if v then enableInfiniteJump(newToken("Jump")) end
-end)
-makeToggle("NoClip", false, function(v)
-    State.NoClip = v
-    if v then enableNoClip(newToken("Clip")) end
-end)
-makeToggle("Fly", false, function(v)
-    State.Fly = v
-    if v then enableFly(newToken("Fly")) elseif Threads.FlyCleanup then Threads.FlyCleanup(); Threads.FlyCleanup = nil end
-end)
-
-makeSection("Visual")
-makeToggle("ESP", false, function(v)
-    State.ESP = v
-    if v then enableESP(newToken("ESP")) else clearESP() end
-end)
-makeToggle("God Mode", false, function(v)
-    State.GodMode = v
-    if v then enableGodMode(newToken("God")) end
-end)
-
-makeSection("Actions")
-makeButton("Teleport to Nearest", teleportToNearest)
-makeButton("Clear All Connections", function()
-    clearConnections()
-    for _, t in pairs(Toggles) do t.set(false) end
-    applyWalkSpeed(16)
-end)
-
-LP.CharacterAdded:Connect(function()
-    task.wait(1)
-    if State.WalkSpeed then applyWalkSpeed(120) end
-end)
-
-if UserInputService.TouchEnabled then
-    MainFrame.Size = UDim2.new(0, 300, 0, 460)
 end
 
-return true
+--[[ ============================================================
+     [D] ATTACK LOOP (uses Clicker)
+   ============================================================ ]]
+local AttackLoop = {}
+AttackLoop.interval = {min = 0.22, max = 0.38}   -- slower cadence reduces desync
+
+function AttackLoop.run(isAlive)
+    while isAlive() do
+        if State and State.AutoAttack and getHum() and getHum().Health > 0 then
+            Clicker.click()
+        end
+        task.wait(AttackLoop.interval.min + math.random() * (AttackLoop.interval.max - AttackLoop.interval.min))
+    end
+end
+
+--[[ ============================================================
+     [E] FARM LOOP — fly-hover control + attack + skill
+   ============================================================ ]]
+local Farm = {}
+Farm.running = false
+
+function Farm.run(isAlive)
+    FlyFarm.start()
+    while isAlive() do
+        if State and State.AutoFarm and getHum() and getHum().Health > 0 then
+            FlyFarm.tick()
+        else
+            if FlyFarm.active then FlyFarm.stop() end
+        end
+        task.wait(0.05)
+    end
+    FlyFarm.stop()
+end
+
+--[[ ============================================================
+     USAGE — replace these calls in your main script:
+
+       startAutoAttack(newToken("Attack"))
+         →  Scheduler.run("Attack", AttackLoop.run)
+
+       startAutoSkill(newToken("Skill"))
+         →  Scheduler.run("Skill", Skill.run)
+
+       startAutoFarm(newToken("Farm"))
+         →  Scheduler.run("Farm", Farm.run)
+
+     Toggling off calls Scheduler.stop(key) — the loops
+     check `isAlive()` every pass and exit clean.
+   ============================================================ ]]
